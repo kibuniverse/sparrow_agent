@@ -28,13 +28,8 @@ impl DeepSeekClient {
         request: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse, Box<dyn std::error::Error>> {
         let response = self.http.post(API_URL).json(request).send().await?;
-        println!("status: {}", response.status());
-
         let text = response.text().await?;
-        println!("response body: {}", text);
-
-        let parsed_response: ChatCompletionResponse =
-            serde_json::from_str(&text)?;
+        let parsed_response: ChatCompletionResponse = serde_json::from_str(&text)?;
         Ok(parsed_response)
     }
 }
