@@ -40,6 +40,10 @@ pub async fn web_search(api_key: &str, query: &str) -> Result<String> {
     Ok(format_search_response(&body))
 }
 
+pub async fn run_rust_wasm(code: &str) -> Result<String> {
+    crate::rust_wasm_runner::run_generated_rust(code).await
+}
+
 #[derive(Debug, Serialize)]
 struct TavilySearchRequest {
     api_key: String,

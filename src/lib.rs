@@ -4,5 +4,6 @@ pub mod client;
 pub mod config;
 pub mod console;
 pub mod debug;
+pub mod rust_wasm_runner;
 pub mod tool_registry;
 pub mod tools;
