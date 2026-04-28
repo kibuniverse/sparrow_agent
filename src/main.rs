@@ -2,25 +2,28 @@ mod api;
 mod client;
 mod tools;
 
-use std::env;
 use std::error::Error;
 use std::io::{self, Write};
+use std::{env, result};
 
 use api::{ChatCompletionRequest, ChatMessage, ChoiceMessage, ThinkingConfig, ToolCall, ToolDef};
 use client::DeepSeekClient;
 use serde::Deserialize;
 use serde_json::json;
+use trpl::join_all;
 
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 const SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 const REASONING_EFFORT: &str = "high";
 const MAX_TOOL_ROUNDS: usize = 6;
 const GET_WEATHER_TOOL: &str = "getWeather";
+const WEB_SEARCH_TOOL: &str = "webSearch";
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
 
 struct AppConfig {
     api_key: String,
+    tavily_api_key: String,
     model: String,
     system_prompt: String,
     reasoning_effort: String,
@@ -35,9 +38,16 @@ impl AppConfig {
                 "DEEPSEEK_API_KEY environment variable is not set",
             )
         })?;
+        let tavily_api_key = env::var("TAVILY_API_KEY").map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "TAVILY_API_KEY environment variable is not set",
+            )
+        })?;
 
         Ok(Self {
             api_key,
+            tavily_api_key,
             model: DEFAULT_MODEL.into(),
             system_prompt: SYSTEM_PROMPT.into(),
             reasoning_effort: REASONING_EFFORT.into(),
@@ -54,6 +64,11 @@ enum TurnStatus {
 #[derive(Deserialize)]
 struct WeatherArgs {
     location: String,
+}
+
+#[derive(Deserialize)]
+struct WebSearchArgs {
+    query: String,
 }
 
 #[tokio::main]
@@ -83,7 +98,7 @@ async fn run() -> AppResult<()> {
 }
 
 fn available_tools() -> Vec<ToolDef> {
-    vec![weather_tool()]
+    vec![weather_tool(), web_search_tool()]
 }
 
 fn weather_tool() -> ToolDef {
@@ -97,6 +112,24 @@ fn weather_tool() -> ToolDef {
             }
         },
         "required": ["location"]
+    }));
+    tool
+}
+
+fn web_search_tool() -> ToolDef {
+    let mut tool = ToolDef::function(
+        WEB_SEARCH_TOOL,
+        "Search the web for information using Tavily.",
+    );
+    tool.function.parameters = Some(json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query."
+            }
+        },
+        "required": ["query"]
     }));
     tool
 }
@@ -139,7 +172,7 @@ async fn run_agent_turn(
             return Ok(());
         };
 
-        match handle_assistant_message(&choice.message, messages).await {
+        match handle_assistant_message(&choice.message, messages, &config.tavily_api_key).await {
             TurnStatus::Continue => continue,
             TurnStatus::Complete => return Ok(()),
         }
@@ -170,6 +203,7 @@ fn build_chat_request(
 async fn handle_assistant_message(
     message: &ChoiceMessage,
     messages: &mut Vec<ChatMessage>,
+    tavily_api_key: &str,
 ) -> TurnStatus {
     if let Some(tool_calls) = message.tool_calls.as_deref() {
         messages.push(ChatMessage {
@@ -180,14 +214,22 @@ async fn handle_assistant_message(
             tool_call_id: None,
         });
 
-        let mut handles = vec![];
-        for tool_call in tool_calls {
-            let handle = execute_tool_call(tool_call);
-            handles.push((handle, tool_call.clone()));
-        }
-        for handle in handles {
-            let tool_call_result = handle.0.await;
-            messages.push(ChatMessage::tool(tool_call_result, handle.1.id.as_str()));
+        let handels_new = tool_calls.iter().map(|tool_call| {
+            let tool_call_id = tool_call.id.clone();
+            async move {
+                let result = match execute_tool_call(tool_call, tavily_api_key).await {
+                    Ok(content) => content,
+                    Err(err) => format!("Tool execution failed: {err}"),
+                };
+                (result, tool_call_id)
+            }
+        });
+        let results = join_all(handels_new).await;
+
+        for handle in results {
+            let tool_call_result = handle.0;
+            let tool_call_id = handle.1.as_str();
+            messages.push(ChatMessage::tool(tool_call_result, tool_call_id));
         }
 
         return TurnStatus::Continue;
@@ -201,12 +243,13 @@ async fn handle_assistant_message(
     TurnStatus::Complete
 }
 
-async fn execute_tool_call(tool_call: &ToolCall) -> String {
+async fn execute_tool_call(tool_call: &ToolCall, tavily_api_key: &str) -> Result<String, String> {
     let function = &tool_call.function;
 
     match function.name.as_str() {
-        GET_WEATHER_TOOL => call_weather_tool(&function.arguments).await,
-        unknown_tool => format!("unknown tool: {unknown_tool}"),
+        GET_WEATHER_TOOL => Ok(call_weather_tool(&function.arguments).await),
+        WEB_SEARCH_TOOL => Ok(call_web_search_tool(&function.arguments, tavily_api_key).await),
+        unknown_tool => Err((format!("unknown tool: {unknown_tool}"))),
     }
 }
 
@@ -214,5 +257,15 @@ async fn call_weather_tool(arguments: &str) -> String {
     match serde_json::from_str::<WeatherArgs>(arguments) {
         Ok(args) => tools::get_weather(&args.location).await,
         Err(error) => format!("invalid arguments for {GET_WEATHER_TOOL}: {error}"),
+    }
+}
+
+async fn call_web_search_tool(arguments: &str, tavily_api_key: &str) -> String {
+    match serde_json::from_str::<WebSearchArgs>(arguments) {
+        Ok(args) => match tools::web_search(tavily_api_key, &args.query).await {
+            Ok(result) => result,
+            Err(error) => format!("web search error: {error}"),
+        },
+        Err(error) => format!("invalid arguments for {WEB_SEARCH_TOOL}: {error}"),
     }
 }
