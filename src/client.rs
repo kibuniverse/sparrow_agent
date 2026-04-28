@@ -1,3 +1,5 @@
+use anyhow::{Context, Result};
+
 use crate::api::{ChatCompletionRequest, ChatCompletionResponse};
 
 const API_URL: &str = "https://api.deepseek.com/chat/completions";
@@ -26,10 +28,17 @@ impl DeepSeekClient {
     pub async fn chat_completion(
         &self,
         request: &ChatCompletionRequest,
-    ) -> Result<ChatCompletionResponse, Box<dyn std::error::Error>> {
-        let response = self.http.post(API_URL).json(request).send().await?;
-        let text = response.text().await?;
-        let parsed_response: ChatCompletionResponse = serde_json::from_str(&text)?;
-        Ok(parsed_response)
+    ) -> Result<ChatCompletionResponse> {
+        self.http
+            .post(API_URL)
+            .json(request)
+            .send()
+            .await
+            .context("failed to send chat completion request")?
+            .error_for_status()
+            .context("chat completion request failed")?
+            .json()
+            .await
+            .context("failed to parse chat completion response")
     }
 }
