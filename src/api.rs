@@ -81,13 +81,13 @@ impl ChatMessage {
         }
     }
 
-    pub fn assistant(content: impl Into<String>) -> Self {
+    pub fn assistant(content: impl Into<String>, reasoning_content: Option<String>) -> Self {
         Self {
             role: "assistant".into(),
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
-            reasoning_content: None,
+            reasoning_content: reasoning_content,
         }
     }
 

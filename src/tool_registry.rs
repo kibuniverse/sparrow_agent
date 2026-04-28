@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::{
     api::{ToolCall, ToolDef},
+    debug_log,
     tools,
 };
 
@@ -32,9 +33,19 @@ impl ToolRegistry {
         let mut results = Vec::with_capacity(tool_calls.len());
 
         for tool_call in tool_calls {
+            debug_log!(
+                "Executing tool: name={}, id={}, args={}",
+                tool_call.function.name, tool_call.id, tool_call.function.arguments,
+            );
             let content = match self.execute(tool_call).await {
-                Ok(content) => content,
-                Err(error) => format!("Tool execution failed: {error}"),
+                Ok(content) => {
+                    debug_log!("Tool '{}' succeeded, result length: {}", tool_call.function.name, content.len());
+                    content
+                }
+                Err(error) => {
+                    debug_log!("Tool '{}' failed: {error}", tool_call.function.name);
+                    format!("Tool execution failed: {error}")
+                }
             };
 
             results.push(ToolExecutionResult {

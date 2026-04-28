@@ -14,6 +14,7 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
+    sparrow_agent::debug::init();
     let config = AppConfig::from_env()?;
     let mut agent = Agent::new(config);
 
