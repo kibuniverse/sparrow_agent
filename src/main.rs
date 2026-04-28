@@ -139,7 +139,7 @@ async fn run_agent_turn(
             return Ok(());
         };
 
-        match handle_assistant_message(&choice.message, messages) {
+        match handle_assistant_message(&choice.message, messages).await {
             TurnStatus::Continue => continue,
             TurnStatus::Complete => return Ok(()),
         }
@@ -167,7 +167,7 @@ fn build_chat_request(
     }
 }
 
-fn handle_assistant_message(
+async fn handle_assistant_message(
     message: &ChoiceMessage,
     messages: &mut Vec<ChatMessage>,
 ) -> TurnStatus {
@@ -180,9 +180,14 @@ fn handle_assistant_message(
             tool_call_id: None,
         });
 
+        let mut handles = vec![];
         for tool_call in tool_calls {
-            let result = execute_tool_call(tool_call);
-            messages.push(ChatMessage::tool(result, &tool_call.id));
+            let handle = execute_tool_call(tool_call);
+            handles.push((handle, tool_call.clone()));
+        }
+        for handle in handles {
+            let tool_call_result = handle.0.await;
+            messages.push(ChatMessage::tool(tool_call_result, handle.1.id.as_str()));
         }
 
         return TurnStatus::Continue;
@@ -196,18 +201,18 @@ fn handle_assistant_message(
     TurnStatus::Complete
 }
 
-fn execute_tool_call(tool_call: &ToolCall) -> String {
+async fn execute_tool_call(tool_call: &ToolCall) -> String {
     let function = &tool_call.function;
 
     match function.name.as_str() {
-        GET_WEATHER_TOOL => call_weather_tool(&function.arguments),
+        GET_WEATHER_TOOL => call_weather_tool(&function.arguments).await,
         unknown_tool => format!("unknown tool: {unknown_tool}"),
     }
 }
 
-fn call_weather_tool(arguments: &str) -> String {
+async fn call_weather_tool(arguments: &str) -> String {
     match serde_json::from_str::<WeatherArgs>(arguments) {
-        Ok(args) => tools::get_weather(&args.location),
+        Ok(args) => tools::get_weather(&args.location).await,
         Err(error) => format!("invalid arguments for {GET_WEATHER_TOOL}: {error}"),
     }
 }
