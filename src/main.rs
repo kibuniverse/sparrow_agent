@@ -19,7 +19,12 @@ async fn run() -> Result<()> {
     let mut agent = Agent::new(config);
 
     println!("Sparrow Agent ready. Type 'exit' or 'quit' to stop.");
-    while let Some(input) = read_user_input("you> ")? {
+    loop {
+        let context_usage_line = agent.context_usage_line();
+        let Some(input) = read_user_input("you> ", Some(&context_usage_line))? else {
+            break;
+        };
+
         if is_exit_command(&input) {
             break;
         }

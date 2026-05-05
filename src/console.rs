@@ -1,15 +1,22 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 #[cfg(unix)]
 use std::{process::Command, process::Stdio};
 
-pub fn read_user_input(prompt: &str) -> io::Result<Option<String>> {
+pub fn read_user_input(prompt: &str, footer: Option<&str>) -> io::Result<Option<String>> {
     loop {
-        print!("{prompt}");
-        io::stdout().flush()?;
+        let inline_footer = print_input_prompt(prompt, footer)?;
 
         let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
+        let bytes_read = io::stdin().read_line(&mut input)?;
+
+        if inline_footer {
+            println!();
+        } else if let Some(footer) = footer.filter(|footer| !footer.is_empty()) {
+            println!("{footer}");
+        }
+
+        if bytes_read == 0 {
             return Ok(None);
         }
 
@@ -20,6 +27,29 @@ pub fn read_user_input(prompt: &str) -> io::Result<Option<String>> {
 
         return Ok(Some(input));
     }
+}
+
+fn print_input_prompt(prompt: &str, footer: Option<&str>) -> io::Result<bool> {
+    let footer = footer.filter(|footer| !footer.is_empty());
+    let inline_footer = footer.is_some() && supports_inline_footer();
+
+    if inline_footer {
+        let footer = footer.expect("footer was checked above");
+        print!("{prompt}\n{footer}\x1b[1A\r");
+        let prompt_width = prompt.chars().count();
+        if prompt_width > 0 {
+            print!("\x1b[{prompt_width}C");
+        }
+    } else {
+        print!("{prompt}");
+    }
+
+    io::stdout().flush()?;
+    Ok(inline_footer)
+}
+
+fn supports_inline_footer() -> bool {
+    io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
 pub fn is_exit_command(input: &str) -> bool {
