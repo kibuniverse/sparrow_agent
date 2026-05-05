@@ -15,7 +15,7 @@ async fn main() {
 
 async fn run() -> Result<()> {
     sparrow_agent::debug::init();
-    let config = AppConfig::from_env()?;
+    let config = AppConfig::load_or_initialize()?;
     let mut agent = Agent::new(config);
 
     println!("Sparrow Agent ready. Type 'exit' or 'quit' to stop.");

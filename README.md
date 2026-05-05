@@ -4,7 +4,13 @@
 
 ## 运行
 
-运行前需要配置环境变量：
+首次运行时可以直接启动，命令行会引导输入 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，并保存到 `~/.sparrow_agent/config.json`：
+
+```bash
+cargo run
+```
+
+如果已经配置环境变量，环境变量会优先生效：
 
 ```bash
 export DEEPSEEK_API_KEY=your_deepseek_api_key
