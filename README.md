@@ -69,6 +69,10 @@ cargo run
 
 Agent 编排器驱动多轮工具循环：发送消息 → 接收响应 → 若含工具调用则执行工具 → 将结果追加到消息历史 → 再次请求模型，直到模型返回文本回复或达到最大轮数。
 
+## 设计文档
+
+- [文件读写能力实现方案](docs/filesystem-capability-implementation-plan.md)：基于 MCP filesystem server、Roots、工具确认和路径沙箱的实现规划。
+
 ## 已内置工具
 
 | 工具名 | 说明 |

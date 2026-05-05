@@ -12,9 +12,12 @@ use crate::console::read_secret_input;
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 const DEFAULT_REASONING_EFFORT: &str = "high";
-const DEFAULT_MAX_TOOL_ROUNDS: usize = 6;
+const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 const CONFIG_DIR_NAME: &str = ".sparrow_agent";
 const CONFIG_FILE_NAME: &str = "config.json";
+
+const DEFAULT_MAX_READ_BYTES: u64 = 262_144;
+const DEFAULT_MAX_WRITE_BYTES: u64 = 262_144;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -24,6 +27,8 @@ pub struct AppConfig {
     pub system_prompt: String,
     pub reasoning_effort: String,
     pub max_tool_rounds: usize,
+    pub filesystem: FilesystemConfig,
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 impl AppConfig {
@@ -77,6 +82,8 @@ impl AppConfig {
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
             reasoning_effort: DEFAULT_REASONING_EFFORT.into(),
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+            filesystem: FilesystemConfig::from_env(),
+            mcp_servers: vec![McpServerConfig::default_filesystem()],
         })
     }
 
@@ -93,6 +100,8 @@ impl AppConfig {
             system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
             reasoning_effort: DEFAULT_REASONING_EFFORT.into(),
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+            filesystem: FilesystemConfig::from_env(),
+            mcp_servers: vec![McpServerConfig::default_filesystem()],
         })
     }
 }
@@ -214,4 +223,134 @@ fn config_path() -> Result<PathBuf> {
     Ok(Path::new(&home)
         .join(CONFIG_DIR_NAME)
         .join(CONFIG_FILE_NAME))
+}
+
+// ── Filesystem config ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct FilesystemConfig {
+    pub enabled: bool,
+    pub roots: Vec<PathBuf>,
+    pub mode: FilesystemMode,
+    pub confirm: ConfirmationPolicy,
+    pub deny_patterns: Vec<String>,
+    pub max_read_bytes: u64,
+    pub max_write_bytes: u64,
+}
+
+impl FilesystemConfig {
+    pub fn from_env() -> Self {
+        let enabled = env::var("SPARROW_FILESYSTEM_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        let roots = env::var("SPARROW_FILESYSTEM_ROOTS")
+            .ok()
+            .map(|v| {
+                v.split(if cfg!(windows) { ';' } else { ':' })
+                    .map(PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![PathBuf::from(".")]);
+
+        let mode = env::var("SPARROW_FILESYSTEM_MODE")
+            .ok()
+            .and_then(|v| match v.as_str() {
+                "read-only" => Some(FilesystemMode::ReadOnly),
+                "read-write" => Some(FilesystemMode::ReadWrite),
+                _ => None,
+            })
+            .unwrap_or(FilesystemMode::ReadOnly);
+
+        let confirm = env::var("SPARROW_FILESYSTEM_CONFIRM")
+            .ok()
+            .and_then(|v| match v.as_str() {
+                "never" => Some(ConfirmationPolicy::Never),
+                "writes" => Some(ConfirmationPolicy::Writes),
+                "always" => Some(ConfirmationPolicy::Always),
+                _ => None,
+            })
+            .unwrap_or(ConfirmationPolicy::Writes);
+
+        Self {
+            enabled,
+            roots,
+            mode,
+            confirm,
+            deny_patterns: default_deny_patterns(),
+            max_read_bytes: DEFAULT_MAX_READ_BYTES,
+            max_write_bytes: DEFAULT_MAX_WRITE_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesystemMode {
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationPolicy {
+    Never,
+    Writes,
+    Always,
+}
+
+impl ConfirmationPolicy {
+    pub fn should_confirm(&self, is_write: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Writes => is_write,
+            Self::Always => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct McpServerConfig {
+    pub id: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub enabled: bool,
+}
+
+impl McpServerConfig {
+    pub fn default_filesystem() -> Self {
+        let command = env::var("SPARROW_MCP_FILESYSTEM_COMMAND")
+            .ok()
+            .unwrap_or_else(|| "npx".into());
+
+        let args = env::var("SPARROW_MCP_FILESYSTEM_ARGS")
+            .ok()
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_else(|| {
+                vec![
+                    "-y".into(),
+                    "@modelcontextprotocol/server-filesystem".into(),
+                    "/Users/yankaizhi/RustProjects/sparrow_agent".into(),
+                ]
+            });
+
+        Self {
+            id: "filesystem".into(),
+            command,
+            args,
+            enabled: true,
+        }
+    }
+}
+
+fn default_deny_patterns() -> Vec<String> {
+    vec![
+        ".git/**".into(),
+        ".env".into(),
+        ".env.*".into(),
+        "**/id_rsa".into(),
+        "**/id_ed25519".into(),
+        "**/*.pem".into(),
+        "**/*.key".into(),
+        ".sparrow_agent/**".into(),
+    ]
 }

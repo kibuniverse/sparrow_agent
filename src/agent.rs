@@ -6,6 +6,9 @@ use crate::{
     client::DeepSeekClient,
     config::AppConfig,
     debug_log,
+    local_tools::LocalToolProvider,
+    mcp::{client::McpClient, filesystem_provider::McpToolProvider},
+    tool_provider::ToolProvider,
     tool_registry::ToolRegistry,
 };
 
@@ -21,19 +24,78 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(config: AppConfig) -> Self {
+    pub async fn new(config: AppConfig) -> Result<Self> {
         let client = DeepSeekClient::new(&config.api_key);
         let messages = vec![ChatMessage::system(&config.system_prompt)];
-        let tool_registry = ToolRegistry::new(&config.tavily_api_key);
         let context_usage = ContextUsage::for_model(&config.model);
 
-        Self {
+        let mut tool_registry = ToolRegistry::new();
+
+        // Add local tools
+        tool_registry.add_provider(Box::new(LocalToolProvider::new(&config.tavily_api_key)));
+
+        // Add MCP filesystem tools if enabled
+        if config.filesystem.enabled {
+            for server_config in &config.mcp_servers {
+                if !server_config.enabled {
+                    continue;
+                }
+
+                match McpClient::connect(
+                    server_config.id.clone(),
+                    &server_config.command,
+                    &server_config.args,
+                    config.filesystem.roots.clone(),
+                )
+                .await
+                {
+                    Ok(mcp_client) => {
+                        match McpToolProvider::new(config.filesystem.clone(), mcp_client).await {
+                            Ok(provider) => {
+                                println!(
+                                    "Filesystem tools enabled ({} tools from '{}').",
+                                    provider.definitions().len(),
+                                    server_config.id,
+                                );
+                                println!("Roots:");
+                                for root in &config.filesystem.roots {
+                                    let display = root.canonicalize().unwrap_or_else(|_| root.clone());
+                                    println!("  - {}", display.display());
+                                }
+                                println!("Mode: {:?}", config.filesystem.mode);
+                                tool_registry.add_provider(Box::new(provider));
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Warning: filesystem MCP provider init failed for '{}': {e}",
+                                    server_config.id,
+                                );
+                                eprintln!("Filesystem tools disabled for this session.");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: MCP server '{}' failed to connect: {e}",
+                            server_config.id,
+                        );
+                        eprintln!("Filesystem tools disabled for this session.");
+                        eprintln!(
+                            "Hint: ensure '{}' is available (e.g., npx is installed and Node.js is present).",
+                            server_config.command,
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
             client,
             config,
             messages,
             tool_registry,
             context_usage,
-        }
+        })
     }
 
     pub fn context_usage_line(&self) -> String {

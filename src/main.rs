@@ -16,12 +16,12 @@ async fn main() {
 async fn run() -> Result<()> {
     sparrow_agent::debug::init();
     let config = AppConfig::load_or_initialize()?;
-    let mut agent = Agent::new(config);
+    let mut agent = Agent::new(config).await?;
 
     println!("Sparrow Agent ready. Type 'exit' or 'quit' to stop.");
     loop {
         let context_usage_line = agent.context_usage_line();
-        let Some(input) = read_user_input("you> ", Some(&context_usage_line))? else {
+        let Some(input) = read_user_input(">>> ", Some(&context_usage_line))? else {
             break;
         };
 
