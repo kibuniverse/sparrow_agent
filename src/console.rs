@@ -1,4 +1,7 @@
-use std::io::{self, IsTerminal, Write};
+use std::{
+    collections::BTreeSet,
+    io::{self, IsTerminal, Write},
+};
 
 use crate::config::StreamingConfig;
 use crate::streaming::{AgentEventSink, AgentStreamEvent};
@@ -107,7 +110,10 @@ pub struct ConsoleTraceRenderer {
     config: StreamingConfig,
     is_tty: bool,
     printed_thinking_header: bool,
+    printed_reasoning_delta: bool,
     printed_answer_header: bool,
+    printed_tool_calls: BTreeSet<u32>,
+    open_tool_call_line: bool,
 }
 
 impl ConsoleTraceRenderer {
@@ -116,7 +122,17 @@ impl ConsoleTraceRenderer {
             config: config.clone(),
             is_tty: io::stdout().is_terminal(),
             printed_thinking_header: false,
+            printed_reasoning_delta: false,
             printed_answer_header: false,
+            printed_tool_calls: BTreeSet::new(),
+            open_tool_call_line: false,
+        }
+    }
+
+    fn finish_reasoning_line(&mut self) {
+        if self.printed_reasoning_delta {
+            println!();
+            self.printed_reasoning_delta = false;
         }
     }
 }
@@ -126,7 +142,10 @@ impl AgentEventSink for ConsoleTraceRenderer {
         match event {
             AgentStreamEvent::ResponseStarted { round: _ } => {
                 self.printed_thinking_header = false;
+                self.printed_reasoning_delta = false;
                 self.printed_answer_header = false;
+                self.printed_tool_calls.clear();
+                self.open_tool_call_line = false;
             }
 
             AgentStreamEvent::ReasoningStarted => {
@@ -148,14 +167,13 @@ impl AgentEventSink for ConsoleTraceRenderer {
                     } else {
                         print!("{text}");
                     }
+                    self.printed_reasoning_delta = true;
                     io::stdout().flush()?;
                 }
             }
 
             AgentStreamEvent::AnswerStarted => {
-                if self.printed_thinking_header {
-                    println!();
-                }
+                self.finish_reasoning_line();
                 if !self.printed_answer_header {
                     print!("agent> ");
                     io::stdout().flush()?;
@@ -175,20 +193,41 @@ impl AgentEventSink for ConsoleTraceRenderer {
                 ..
             } => {
                 if self.config.show_tool_call_deltas {
-                    let name = name.as_deref().unwrap_or("unknown");
-                    if let Some(args) = arguments_delta {
-                        print!("tool[{index}] {name} {args}");
-                    } else {
-                        print!("tool[{index}] {name}");
+                    if name.is_none() && arguments_delta.is_none() {
+                        return Ok(());
                     }
+
+                    self.finish_reasoning_line();
+
+                    if self.printed_tool_calls.insert(*index) {
+                        if self.open_tool_call_line {
+                            println!();
+                        }
+
+                        match name.as_deref() {
+                            Some(name) => print!("tool[{index}]> {name} "),
+                            None => print!("tool[{index}]> "),
+                        }
+                        self.open_tool_call_line = true;
+                    }
+
+                    if let Some(args) = arguments_delta {
+                        print!("{args}");
+                    }
+
                     io::stdout().flush()?;
                 }
             }
 
             AgentStreamEvent::ResponseFinished { finish_reason: _ } => {
-                if self.printed_answer_header {
+                if self.printed_answer_header
+                    || self.printed_reasoning_delta
+                    || self.open_tool_call_line
+                {
                     println!();
                 }
+                self.printed_reasoning_delta = false;
+                self.open_tool_call_line = false;
             }
 
             AgentStreamEvent::Usage(_) => {}

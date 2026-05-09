@@ -82,6 +82,7 @@ impl ToolCallBuilder {
 
 enum Phase {
     NotStarted,
+    Started,
     Reasoning,
     Answer,
     Done,
@@ -129,7 +130,7 @@ impl StreamAccumulator {
         {
             if matches!(self.phase, Phase::NotStarted) {
                 sink.on_event(&AgentStreamEvent::ResponseStarted { round })?;
-                self.phase = Phase::Reasoning;
+                self.phase = Phase::Started;
             }
 
             if let Some(role) = &delta.role {
@@ -182,7 +183,6 @@ impl StreamAccumulator {
                     .entry(index)
                     .or_insert_with(ToolCallBuilder::new);
 
-                let event_id = id.clone();
                 let event_args = function.as_ref().and_then(|f| f.arguments.clone());
 
                 if let Some(ref id) = id {
@@ -202,8 +202,8 @@ impl StreamAccumulator {
 
                 sink.on_event(&AgentStreamEvent::ToolCallDelta {
                     index,
-                    id: event_id,
-                    name: None,
+                    id: builder.id.clone(),
+                    name: builder.name.clone(),
                     arguments_delta: event_args,
                 })?;
             }
@@ -255,5 +255,187 @@ impl StreamAccumulator {
             finish_reason: self.finish_reason,
             usage: self.usage,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentEventSink, AgentStreamEvent, StreamAccumulator};
+    use crate::api::{
+        ChatCompletionStreamChunk, ChoiceDelta, FunctionCallDelta, StreamChoice, ToolCallDelta,
+    };
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Vec<String>,
+    }
+
+    impl AgentEventSink for RecordingSink {
+        fn on_event(&mut self, event: &AgentStreamEvent) -> anyhow::Result<()> {
+            match event {
+                AgentStreamEvent::ResponseStarted { round } => {
+                    self.events.push(format!("response_started:{round}"));
+                }
+                AgentStreamEvent::ReasoningStarted => {
+                    self.events.push("reasoning_started".into());
+                }
+                AgentStreamEvent::ReasoningDelta(text) => {
+                    self.events.push(format!("reasoning:{text}"));
+                }
+                AgentStreamEvent::AnswerStarted => {
+                    self.events.push("answer_started".into());
+                }
+                AgentStreamEvent::AnswerDelta(text) => {
+                    self.events.push(format!("answer:{text}"));
+                }
+                AgentStreamEvent::ToolCallDelta {
+                    index,
+                    name,
+                    arguments_delta,
+                    ..
+                } => {
+                    self.events.push(format!(
+                        "tool:{index}:{}:{}",
+                        name.as_deref().unwrap_or("<none>"),
+                        arguments_delta.as_deref().unwrap_or("")
+                    ));
+                }
+                AgentStreamEvent::ResponseFinished { finish_reason } => {
+                    self.events.push(format!(
+                        "finished:{}",
+                        finish_reason.as_deref().unwrap_or("<none>")
+                    ));
+                }
+                AgentStreamEvent::Usage(_) => {
+                    self.events.push("usage".into());
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn emits_reasoning_started_after_role_only_chunk() {
+        let mut accumulator = StreamAccumulator::new();
+        let mut sink = RecordingSink::default();
+
+        accumulator
+            .push(chunk(delta_with_role("assistant"), None), &mut sink, 0)
+            .unwrap();
+        accumulator
+            .push(
+                chunk(delta_with_reasoning("Let me think."), None),
+                &mut sink,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            sink.events,
+            vec![
+                "response_started:0",
+                "reasoning_started",
+                "reasoning:Let me think.",
+            ]
+        );
+    }
+
+    #[test]
+    fn includes_accumulated_tool_name_in_argument_delta_events() {
+        let mut accumulator = StreamAccumulator::new();
+        let mut sink = RecordingSink::default();
+
+        accumulator
+            .push(
+                chunk(delta_with_tool_name("call_1", "list_directory"), None),
+                &mut sink,
+                0,
+            )
+            .unwrap();
+        accumulator
+            .push(
+                chunk(delta_with_tool_arguments("{\"path\":\"/tmp\"}"), None),
+                &mut sink,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(
+            sink.events,
+            vec![
+                "response_started:0",
+                "tool:0:list_directory:",
+                "tool:0:list_directory:{\"path\":\"/tmp\"}",
+            ]
+        );
+    }
+
+    fn chunk(delta: ChoiceDelta, finish_reason: Option<&str>) -> ChatCompletionStreamChunk {
+        ChatCompletionStreamChunk {
+            id: None,
+            object: None,
+            created: None,
+            model: None,
+            choices: vec![StreamChoice {
+                index: 0,
+                delta,
+                finish_reason: finish_reason.map(str::to_string),
+            }],
+            usage: None,
+        }
+    }
+
+    fn empty_delta() -> ChoiceDelta {
+        ChoiceDelta {
+            role: None,
+            content: None,
+            reasoning_content: None,
+            tool_calls: None,
+        }
+    }
+
+    fn delta_with_role(role: &str) -> ChoiceDelta {
+        ChoiceDelta {
+            role: Some(role.into()),
+            ..empty_delta()
+        }
+    }
+
+    fn delta_with_reasoning(reasoning: &str) -> ChoiceDelta {
+        ChoiceDelta {
+            reasoning_content: Some(reasoning.into()),
+            ..empty_delta()
+        }
+    }
+
+    fn delta_with_tool_name(id: &str, name: &str) -> ChoiceDelta {
+        ChoiceDelta {
+            tool_calls: Some(vec![ToolCallDelta {
+                index: 0,
+                id: Some(id.into()),
+                kind: Some("function".into()),
+                function: Some(FunctionCallDelta {
+                    name: Some(name.into()),
+                    arguments: None,
+                }),
+            }]),
+            ..empty_delta()
+        }
+    }
+
+    fn delta_with_tool_arguments(arguments: &str) -> ChoiceDelta {
+        ChoiceDelta {
+            tool_calls: Some(vec![ToolCallDelta {
+                index: 0,
+                id: None,
+                kind: None,
+                function: Some(FunctionCallDelta {
+                    name: None,
+                    arguments: Some(arguments.into()),
+                }),
+            }]),
+            ..empty_delta()
+        }
     }
 }

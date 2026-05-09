@@ -369,7 +369,7 @@ impl StreamingConfig {
         let show_tool_call_deltas = env::var("SPARROW_SHOW_TOOL_CALL_DELTAS")
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         Self {
             enabled,
