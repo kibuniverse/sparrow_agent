@@ -151,9 +151,9 @@ impl AgentEventSink for ConsoleTraceRenderer {
             AgentStreamEvent::ReasoningStarted => {
                 if self.config.show_reasoning && !self.printed_thinking_header {
                     if self.is_tty {
-                        print!("{DIM}thinking>\n{RESET}");
+                        print!("{DIM}thinking> {RESET}");
                     } else {
-                        print!("thinking>\n");
+                        print!("thinking> ");
                     }
                     io::stdout().flush()?;
                     self.printed_thinking_header = true;

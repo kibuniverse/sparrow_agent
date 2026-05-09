@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::console::read_secret_input;
 
-const DEFAULT_MODEL: &str = "deepseek-v4-flash";
+const DEFAULT_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
