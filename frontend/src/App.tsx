@@ -1,4 +1,3 @@
-import { Button } from '@base-ui/react'
 
 function App() {
   return (
