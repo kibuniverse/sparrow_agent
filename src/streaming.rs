@@ -161,7 +161,9 @@ impl StreamAccumulator {
             self.reasoning_content.push_str(reasoning);
         }
 
-        if let Some(content) = &delta.content {
+        if let Some(content) = &delta.content
+            && !content.is_empty()
+        {
             if !matches!(self.phase, Phase::Answer) {
                 sink.on_event(&AgentStreamEvent::AnswerStarted)?;
                 self.phase = Phase::Answer;
@@ -371,6 +373,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ignores_empty_content_deltas() {
+        let mut accumulator = StreamAccumulator::new();
+        let mut sink = RecordingSink::default();
+
+        accumulator
+            .push(chunk(delta_with_content(""), None), &mut sink, 0)
+            .unwrap();
+        accumulator
+            .push(chunk(delta_with_content("done"), None), &mut sink, 0)
+            .unwrap();
+
+        assert_eq!(
+            sink.events,
+            vec!["response_started:0", "answer_started", "answer:done"]
+        );
+    }
+
     fn chunk(delta: ChoiceDelta, finish_reason: Option<&str>) -> ChatCompletionStreamChunk {
         ChatCompletionStreamChunk {
             id: None,
@@ -405,6 +425,13 @@ mod tests {
     fn delta_with_reasoning(reasoning: &str) -> ChoiceDelta {
         ChoiceDelta {
             reasoning_content: Some(reasoning.into()),
+            ..empty_delta()
+        }
+    }
+
+    fn delta_with_content(content: &str) -> ChoiceDelta {
+        ChoiceDelta {
+            content: Some(content.into()),
             ..empty_delta()
         }
     }

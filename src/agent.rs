@@ -249,7 +249,7 @@ impl Agent {
         }
 
         if let Some(content) = &message.content {
-            if !self.config.streaming.enabled {
+            if !self.config.streaming.enabled && !content.is_empty() {
                 println!("agent> {content}");
             }
             self.messages.push(ChatMessage::assistant(
