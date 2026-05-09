@@ -1,13 +1,16 @@
 use anyhow::Result;
+use futures_util::StreamExt;
 use indicatif::{InMemoryTerm, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::{
     api::{ChatCompletionRequest, ChatMessage, ChoiceMessage, ThinkingConfig, Usage},
     client::DeepSeekClient,
     config::AppConfig,
+    console::ConsoleTraceRenderer,
     debug_log,
     local_tools::LocalToolProvider,
     mcp::{client::McpClient, filesystem_provider::McpToolProvider},
+    streaming::StreamAccumulator,
     tool_provider::ToolProvider,
     tool_registry::ToolRegistry,
 };
@@ -105,20 +108,17 @@ impl Agent {
     pub async fn handle_user_input(&mut self, input: impl Into<String>) -> Result<()> {
         self.messages.push(ChatMessage::user(input));
 
+        if self.config.streaming.enabled {
+            self.run_streaming_loop().await
+        } else {
+            self.run_non_streaming_loop().await
+        }
+    }
+
+    async fn run_non_streaming_loop(&mut self) -> Result<()> {
         for round in 0..self.config.max_tool_rounds {
-            debug_log!("=== Tool round {round} ===");
-            debug_log!("Message count: {}", self.messages.len());
-            for (i, msg) in self.messages.iter().enumerate() {
-                let content_str = msg.content.as_deref().unwrap_or("<None>");
-                let preview_len = content_str.len().min(80);
-                debug_log!(
-                    "msg[{i}] role={}, content={:?}..., tool_calls={}, tool_call_id={}",
-                    msg.role,
-                    &content_str[..preview_len],
-                    msg.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0),
-                    msg.tool_call_id.as_deref().unwrap_or("<None>"),
-                );
-            }
+            debug_log!("=== Tool round {round} (non-streaming) ===");
+            self.log_messages();
 
             let request = self.build_request();
             let response = self.client.chat_completion(&request).await?;
@@ -149,6 +149,57 @@ impl Agent {
         Ok(())
     }
 
+    async fn run_streaming_loop(&mut self) -> Result<()> {
+        let mut renderer = ConsoleTraceRenderer::new(&self.config.streaming);
+
+        for round in 0..self.config.max_tool_rounds {
+            debug_log!("=== Tool round {round} (streaming) ===");
+            self.log_messages();
+
+            let request = self.build_request();
+            let completed = {
+                let stream = self.client.chat_completion_stream(&request);
+                let mut accumulator = StreamAccumulator::new();
+                let mut stream = Box::pin(stream);
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = chunk_result?;
+                    accumulator.push(chunk, &mut renderer, round)?;
+                }
+                accumulator.finish(&mut renderer)?
+            };
+
+            if let Some(usage) = &completed.usage {
+                self.context_usage.update_from_usage(usage);
+            }
+
+            match self.handle_assistant_message(&completed.message).await {
+                TurnStatus::Continue => continue,
+                TurnStatus::Complete => return Ok(()),
+            }
+        }
+
+        eprintln!(
+            "Error: reached the maximum number of tool rounds ({})",
+            self.config.max_tool_rounds
+        );
+        Ok(())
+    }
+
+    fn log_messages(&self) {
+        debug_log!("Message count: {}", self.messages.len());
+        for (i, msg) in self.messages.iter().enumerate() {
+            let content_str = msg.content.as_deref().unwrap_or("<None>");
+            let preview_len = content_str.len().min(80);
+            debug_log!(
+                "msg[{i}] role={}, content={:?}..., tool_calls={}, tool_call_id={}",
+                msg.role,
+                &content_str[..preview_len],
+                msg.tool_calls.as_ref().map(|tc| tc.len()).unwrap_or(0),
+                msg.tool_call_id.as_deref().unwrap_or("<None>"),
+            );
+        }
+    }
+
     fn build_request(&self) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: self.config.model.clone(),
@@ -157,6 +208,7 @@ impl Agent {
             thinking: Some(ThinkingConfig::enabled()),
             reasoning_effort: Some(self.config.reasoning_effort.clone()),
             stream: None,
+            stream_options: None,
         }
     }
 
@@ -197,7 +249,9 @@ impl Agent {
         }
 
         if let Some(content) = &message.content {
-            println!("agent> {content}");
+            if !self.config.streaming.enabled {
+                println!("agent> {content}");
+            }
             self.messages.push(ChatMessage::assistant(
                 content,
                 message.reasoning_content.clone(),

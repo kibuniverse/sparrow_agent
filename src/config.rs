@@ -29,6 +29,7 @@ pub struct AppConfig {
     pub max_tool_rounds: usize,
     pub filesystem: FilesystemConfig,
     pub mcp_servers: Vec<McpServerConfig>,
+    pub streaming: StreamingConfig,
 }
 
 impl AppConfig {
@@ -84,6 +85,7 @@ impl AppConfig {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             filesystem: FilesystemConfig::from_env(),
             mcp_servers: vec![McpServerConfig::default_filesystem()],
+            streaming: StreamingConfig::from_env(),
         })
     }
 
@@ -102,6 +104,7 @@ impl AppConfig {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             filesystem: FilesystemConfig::from_env(),
             mcp_servers: vec![McpServerConfig::default_filesystem()],
+            streaming: StreamingConfig::from_env(),
         })
     }
 }
@@ -338,6 +341,40 @@ impl McpServerConfig {
             command,
             args,
             enabled: true,
+        }
+    }
+}
+
+// ── Streaming config ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct StreamingConfig {
+    pub enabled: bool,
+    pub show_reasoning: bool,
+    pub show_tool_call_deltas: bool,
+}
+
+impl StreamingConfig {
+    pub fn from_env() -> Self {
+        let enabled = env::var("SPARROW_STREAMING_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        let show_reasoning = env::var("SPARROW_SHOW_REASONING")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        let show_tool_call_deltas = env::var("SPARROW_SHOW_TOOL_CALL_DELTAS")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(true);
+
+        Self {
+            enabled,
+            show_reasoning,
+            show_tool_call_deltas,
         }
     }
 }

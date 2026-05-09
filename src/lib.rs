@@ -7,6 +7,7 @@ pub mod debug;
 pub mod local_tools;
 pub mod mcp;
 pub mod rust_wasm_runner;
+pub mod streaming;
 pub mod tool_provider;
 pub mod tool_registry;
 pub mod tools;

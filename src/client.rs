@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
+use futures_util::StreamExt;
 
 use crate::{
-    api::{ChatCompletionRequest, ChatCompletionResponse},
+    api::{ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStreamChunk},
     debug_log,
 };
 
@@ -77,5 +78,113 @@ impl DeepSeekClient {
         );
 
         serde_json::from_str(&body).context("failed to parse chat completion response")
+    }
+
+    pub fn chat_completion_stream(
+        &self,
+        request: &ChatCompletionRequest,
+    ) -> impl futures_util::Stream<Item = Result<ChatCompletionStreamChunk>> + '_ {
+        let mut stream_request = request.clone();
+        stream_request.stream = Some(true);
+        stream_request.stream_options = None;
+
+        debug_log!(
+            "Sending streaming request, payload:\n{}",
+            serde_json::to_string(&stream_request).unwrap_or_default()
+        );
+
+        let http = self.http.clone();
+
+        async_stream::stream! {
+            let response = match http
+                .post(API_URL)
+                .json(&stream_request)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    yield Err(anyhow::anyhow!("failed to send streaming request: {e}"));
+                    return;
+                }
+            };
+
+            let status = response.status();
+            debug_log!("Stream API response status: {status}");
+
+            if !status.is_success() {
+                let body = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+                debug_log!("Stream API error response body:\n{body}");
+                yield Err(anyhow::anyhow!(
+                    "streaming request failed with status {status}: {body}"
+                ));
+                return;
+            }
+
+            let byte_stream = response.bytes_stream();
+            let mut buffer = String::new();
+
+            let mut byte_stream = Box::pin(byte_stream);
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let bytes = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        yield Err(anyhow::anyhow!("error reading stream bytes: {e}"));
+                        return;
+                    }
+                };
+
+                let text = match std::str::from_utf8(&bytes) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        yield Err(anyhow::anyhow!("invalid UTF-8 in stream: {e}"));
+                        return;
+                    }
+                };
+
+                buffer.push_str(text);
+
+                while let Some(frame_end) = buffer.find("\n\n").or_else(|| buffer.find("\r\n\r\n"))
+                {
+                    let frame = buffer[..frame_end].to_string();
+                    let separator_len = if buffer[frame_end..].starts_with("\r\n\r\n") { 4 } else { 2 };
+                    buffer = buffer[frame_end + separator_len..].to_string();
+
+                    for line in frame.lines() {
+                        let line = line.trim();
+                        let Some(payload) = line.strip_prefix("data:") else {
+                            continue;
+                        };
+                        let payload = payload.trim();
+
+                        if payload == "[DONE]" {
+                            debug_log!("Stream received [DONE]");
+                            return;
+                        }
+
+                        match serde_json::from_str::<ChatCompletionStreamChunk>(payload) {
+                            Ok(chunk) => {
+                                debug_log!("Stream chunk parsed: {} choice(s)", chunk.choices.len());
+                                yield Ok(chunk);
+                            }
+                            Err(e) => {
+                                let preview = truncate_str(payload, 500);
+                                debug_log!("Stream chunk parse error: {e}, payload: {preview}");
+                                yield Err(anyhow::anyhow!(
+                                    "failed to parse stream chunk: {e} — payload: {preview}"
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+
+            debug_log!("Stream byte stream ended");
+        }
     }
 }
