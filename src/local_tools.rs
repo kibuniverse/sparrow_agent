@@ -8,7 +8,6 @@ use crate::{
     tools,
 };
 
-const GET_WEATHER_TOOL: &str = "getWeather";
 const WEB_SEARCH_TOOL: &str = "webSearch";
 const RUN_RUST_WASM_TOOL: &str = "runRustWasm";
 
@@ -21,7 +20,7 @@ impl LocalToolProvider {
     pub fn new(tavily_api_key: impl Into<String>) -> Self {
         Self {
             tavily_api_key: tavily_api_key.into(),
-            definitions: vec![weather_tool(), web_search_tool(), run_rust_wasm_tool()],
+            definitions: vec![web_search_tool(), run_rust_wasm_tool()],
         }
     }
 }
@@ -39,10 +38,6 @@ impl ToolProvider for LocalToolProvider {
     async fn execute(&self, tool_call: &ToolCall) -> Result<Option<String>> {
         let name = &tool_call.function.name;
         match name.as_str() {
-            GET_WEATHER_TOOL => {
-                let result = call_weather_tool(&tool_call.function.arguments).await?;
-                Ok(Some(result))
-            }
             WEB_SEARCH_TOOL => {
                 let result =
                     call_web_search_tool(&tool_call.function.arguments, &self.tavily_api_key)
@@ -59,11 +54,6 @@ impl ToolProvider for LocalToolProvider {
 }
 
 #[derive(serde::Deserialize)]
-struct WeatherArgs {
-    location: String,
-}
-
-#[derive(serde::Deserialize)]
 struct WebSearchArgs {
     query: String,
 }
@@ -71,21 +61,6 @@ struct WebSearchArgs {
 #[derive(serde::Deserialize)]
 struct RunRustWasmArgs {
     code: String,
-}
-
-fn weather_tool() -> ToolDef {
-    let mut tool = ToolDef::function(GET_WEATHER_TOOL, "Get the weather for a given location.");
-    tool.function.parameters = Some(json!({
-        "type": "object",
-        "properties": {
-            "location": {
-                "type": "string",
-                "description": "The location to get the weather for."
-            }
-        },
-        "required": ["location"]
-    }));
-    tool
 }
 
 fn web_search_tool() -> ToolDef {
@@ -122,11 +97,6 @@ fn run_rust_wasm_tool() -> ToolDef {
         "required": ["code"]
     }));
     tool
-}
-
-async fn call_weather_tool(arguments: &str) -> Result<String> {
-    let args: WeatherArgs = parse_arguments(GET_WEATHER_TOOL, arguments)?;
-    Ok(tools::get_weather(&args.location).await)
 }
 
 async fn call_web_search_tool(arguments: &str, tavily_api_key: &str) -> Result<String> {
