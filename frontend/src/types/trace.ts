@@ -213,3 +213,12 @@ export interface AgentApiErrorBody {
     retryable: boolean
   }
 }
+
+export type TraceArchiveSource = 'cli' | 'server' | 'imported' | string
+
+export interface TraceArchive {
+  schema_version: 1
+  exported_at: string
+  source: TraceArchiveSource
+  task: TaskSnapshot
+}

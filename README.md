@@ -63,6 +63,45 @@ CLI 每轮输入前会显示上下文窗口使用情况。当前代码对 `deeps
 - 最终回答按流式增量展示；
 - 工具调用参数增量默认不展示，可通过环境变量打开。
 
+### CLI + 浏览器观察模式
+
+如果希望仍然从 CLI 输入任务，但在浏览器里查看每一轮 agent loop，可先构建前端，然后使用观察模式启动：
+
+```bash
+cd frontend
+pnpm install
+pnpm build
+cd ..
+cargo run -- --inspect
+```
+
+也可以使用等价参数：
+
+```bash
+cargo run -- --browser-trace
+```
+
+观察服务默认监听 `127.0.0.1:8787`，可通过 `SPARROW_INSPECT_ADDR` 覆盖：
+
+```bash
+SPARROW_INSPECT_ADDR=127.0.0.1:9797 cargo run -- --inspect
+```
+
+每次在 CLI 输入一条消息后，终端会先打印本轮实时任务地址：
+
+```text
+inspect> http://127.0.0.1:8787/tasks/task_01...
+```
+
+打开该地址即可查看本轮 loop 的模型调用、reasoning 增量、工具调用、工具输出和最终回答。任务完成或失败后，CLI 会将完整 trace 写入 `SPARROW_TRACE_DIR` 指定目录；如果未设置该变量，默认写入运行目录下的 `.sparrow_agent/traces`：
+
+```text
+trace> /Users/me/project/.sparrow_agent/traces/task_01....sparrow-trace.json
+replay> http://127.0.0.1:8787/replay/task_01....sparrow-trace.json
+```
+
+打开 `replay>` 地址可在前端按事件顺序回放完整 trace；将路径中的 `/replay/` 改成 `/trace-files/` 可直接预览最终状态。
+
 ## Server 与前端模式
 
 后端服务默认监听 `127.0.0.1:8787`：
@@ -127,6 +166,8 @@ pnpm dev
 | `SPARROW_CONFIG_PATH` | 自定义配置文件路径 | `~/.sparrow_agent/config.json` |
 | `SPARROW_DEBUG` | 启用调试日志，设为任意值开启 | 关闭 |
 | `SPARROW_SERVER_ADDR` | Server 模式监听地址 | `127.0.0.1:8787` |
+| `SPARROW_INSPECT_ADDR` | CLI 浏览器观察模式监听地址 | `127.0.0.1:8787` |
+| `SPARROW_TRACE_DIR` | CLI 观察模式完成后写入 trace 文件的目录 | `<运行目录>/.sparrow_agent/traces` |
 | `SPARROW_STREAMING_ENABLED` | 是否启用模型流式调用 | `true` |
 | `SPARROW_SHOW_REASONING` | CLI 是否展示 reasoning | `true` |
 | `SPARROW_SHOW_TOOL_CALL_DELTAS` | CLI 是否展示工具调用参数增量 | `false` |

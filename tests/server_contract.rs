@@ -94,6 +94,123 @@ async fn server_events_endpoint_replays_trace_sse_frames() {
     assert!(body.contains(r#""type":"task.completed""#));
 }
 
+#[tokio::test]
+async fn browser_router_serves_frontend_index() {
+    let frontend = tempfile::tempdir().unwrap();
+    std::fs::write(
+        frontend.path().join("index.html"),
+        "<!doctype html><title>Sparrow Inspector</title>",
+    )
+    .unwrap();
+
+    let app = sparrow_agent::server::build_browser_router(
+        ServerState::new(test_config(), Arc::new(TraceStore::new())),
+        frontend.path().to_path_buf(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains("Sparrow Inspector"));
+}
+
+#[tokio::test]
+async fn browser_router_falls_back_for_task_deep_links() {
+    let frontend = tempfile::tempdir().unwrap();
+    std::fs::write(
+        frontend.path().join("index.html"),
+        "<!doctype html><title>Sparrow Inspector</title>",
+    )
+    .unwrap();
+
+    let app = sparrow_agent::server::build_browser_router(
+        ServerState::new(test_config(), Arc::new(TraceStore::new())),
+        frontend.path().to_path_buf(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/tasks/task_123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains("Sparrow Inspector"));
+}
+
+#[tokio::test]
+async fn browser_router_opens_generated_trace_archive() {
+    let frontend = tempfile::tempdir().unwrap();
+    std::fs::write(frontend.path().join("index.html"), "<!doctype html>").unwrap();
+    let trace_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        trace_dir.path().join("task_1.sparrow-trace.json"),
+        r#"{"schema_version":1,"exported_at":"2026-05-10T00:00:00Z","source":"cli","task":{"task_id":"task_1","conversation_id":"conv_1","status":"succeeded","created_at":"2026-05-10T00:00:00Z","updated_at":"2026-05-10T00:00:01Z","events":[]}}"#,
+    )
+    .unwrap();
+
+    let app = sparrow_agent::server::build_browser_router_with_trace_dir(
+        ServerState::new(test_config(), Arc::new(TraceStore::new())),
+        frontend.path().to_path_buf(),
+        trace_dir.path().to_path_buf(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agent/trace-files/task_1.sparrow-trace.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains(r#""task_id":"task_1""#));
+}
+
+#[tokio::test]
+async fn browser_router_rejects_trace_archive_path_traversal() {
+    let frontend = tempfile::tempdir().unwrap();
+    std::fs::write(frontend.path().join("index.html"), "<!doctype html>").unwrap();
+    let trace_dir = tempfile::tempdir().unwrap();
+    let app = sparrow_agent::server::build_browser_router_with_trace_dir(
+        ServerState::new(test_config(), Arc::new(TraceStore::new())),
+        frontend.path().to_path_buf(),
+        trace_dir.path().to_path_buf(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agent/trace-files/..%2Fsecret.sparrow-trace.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         api_key: "test".into(),

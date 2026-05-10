@@ -3,6 +3,7 @@ import type {
   CreateAgentTaskRequest,
   CreateAgentTaskResponse,
   TaskSnapshot,
+  TraceArchive,
 } from '../types/trace'
 
 export class AgentTraceApiError extends Error {
@@ -40,6 +41,11 @@ export function buildTaskEventsUrl(taskId: string, afterSeq: number): string {
   const url = new URL(`/api/agent/tasks/${encodeURIComponent(taskId)}/events`, window.location.origin)
   url.searchParams.set('after_seq', String(afterSeq))
   return `${url.pathname}${url.search}`
+}
+
+export async function getTraceArchive(fileName: string): Promise<TraceArchive> {
+  const response = await fetch(`/api/agent/trace-files/${encodeURIComponent(fileName)}`)
+  return readJsonResponse<TraceArchive>(response)
 }
 
 async function readJsonResponse<T>(response: Response): Promise<T> {

@@ -15,3 +15,5 @@ pub mod tool_registry;
 pub mod tools;
 pub mod trace;
 pub mod trace_store;
+pub mod trace_file;
+pub mod cli_observer;
