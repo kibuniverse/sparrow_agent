@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::console::read_secret_input;
 
 const DEFAULT_MODEL: &str = "deepseek-v4-pro";
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. when read the file, ignore the build targer files like target dir in rust project, ouptput or dist dir in frontend project.  do not reade the entire project dir tree. read the file in entry file first. do not use the mcp__filesystem__directory_tree in root dir, it maybe cause the context exceed";
 const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 const CONFIG_DIR_NAME: &str = ".sparrow_agent";
