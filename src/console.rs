@@ -1,4 +1,10 @@
-use std::io::{self, IsTerminal, Write};
+use std::{
+    collections::BTreeSet,
+    io::{self, IsTerminal, Write},
+};
+
+use crate::config::StreamingConfig;
+use crate::streaming::{AgentEventSink, AgentStreamEvent};
 
 #[cfg(unix)]
 use std::{process::Command, process::Stdio};
@@ -93,4 +99,140 @@ fn set_stdin_echo(enabled: bool) -> io::Result<bool> {
 #[cfg(not(unix))]
 fn set_stdin_echo(_enabled: bool) -> io::Result<bool> {
     Ok(false)
+}
+
+// ── Console trace renderer ────────────────────────────────────────────
+
+const DIM: &str = "\x1b[2m";
+const RESET: &str = "\x1b[0m";
+
+pub struct ConsoleTraceRenderer {
+    config: StreamingConfig,
+    is_tty: bool,
+    printed_thinking_header: bool,
+    printed_reasoning_delta: bool,
+    printed_answer_header: bool,
+    printed_tool_calls: BTreeSet<u32>,
+    open_tool_call_line: bool,
+}
+
+impl ConsoleTraceRenderer {
+    pub fn new(config: &StreamingConfig) -> Self {
+        Self {
+            config: config.clone(),
+            is_tty: io::stdout().is_terminal(),
+            printed_thinking_header: false,
+            printed_reasoning_delta: false,
+            printed_answer_header: false,
+            printed_tool_calls: BTreeSet::new(),
+            open_tool_call_line: false,
+        }
+    }
+
+    fn finish_reasoning_line(&mut self) {
+        if self.printed_reasoning_delta {
+            println!();
+            self.printed_reasoning_delta = false;
+        }
+    }
+}
+
+impl AgentEventSink for ConsoleTraceRenderer {
+    fn on_event(&mut self, event: &AgentStreamEvent) -> anyhow::Result<()> {
+        match event {
+            AgentStreamEvent::ResponseStarted { round: _ } => {
+                self.printed_thinking_header = false;
+                self.printed_reasoning_delta = false;
+                self.printed_answer_header = false;
+                self.printed_tool_calls.clear();
+                self.open_tool_call_line = false;
+            }
+
+            AgentStreamEvent::ReasoningStarted => {
+                if self.config.show_reasoning && !self.printed_thinking_header {
+                    if self.is_tty {
+                        print!("{DIM}thinking> {RESET}");
+                    } else {
+                        print!("thinking> ");
+                    }
+                    io::stdout().flush()?;
+                    self.printed_thinking_header = true;
+                }
+            }
+
+            AgentStreamEvent::ReasoningDelta(text) => {
+                if self.config.show_reasoning {
+                    if self.is_tty {
+                        print!("{DIM}{text}{RESET}");
+                    } else {
+                        print!("{text}");
+                    }
+                    self.printed_reasoning_delta = true;
+                    io::stdout().flush()?;
+                }
+            }
+
+            AgentStreamEvent::AnswerStarted => {
+                self.finish_reasoning_line();
+                if !self.printed_answer_header {
+                    print!("agent> ");
+                    io::stdout().flush()?;
+                    self.printed_answer_header = true;
+                }
+            }
+
+            AgentStreamEvent::AnswerDelta(text) => {
+                print!("{text}");
+                io::stdout().flush()?;
+            }
+
+            AgentStreamEvent::ToolCallDelta {
+                index,
+                name,
+                arguments_delta,
+                ..
+            } => {
+                if self.config.show_tool_call_deltas {
+                    if name.is_none() && arguments_delta.is_none() {
+                        return Ok(());
+                    }
+
+                    self.finish_reasoning_line();
+
+                    if self.printed_tool_calls.insert(*index) {
+                        if self.open_tool_call_line {
+                            println!();
+                        }
+
+                        match name.as_deref() {
+                            Some(name) => print!("tool[{index}]> {name} "),
+                            None => print!("tool[{index}]> "),
+                        }
+                        self.open_tool_call_line = true;
+                    }
+
+                    if let Some(args) = arguments_delta {
+                        print!("{args}");
+                    }
+
+                    io::stdout().flush()?;
+                }
+            }
+
+            AgentStreamEvent::ResponseFinished { finish_reason: _ } => {
+                if self.printed_answer_header
+                    || self.printed_reasoning_delta
+                    || self.open_tool_call_line
+                {
+                    println!();
+                }
+                self.printed_reasoning_delta = false;
+                self.open_tool_call_line = false;
+            }
+
+            AgentStreamEvent::Usage(_) => {}
+        }
+
+        Ok(())
+    }
 }
