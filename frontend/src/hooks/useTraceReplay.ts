@@ -4,10 +4,23 @@ import type { TraceEvent } from '../types/trace'
 interface UseTraceReplayOptions {
   events: TraceEvent[]
   onEvent: (event: TraceEvent) => void
-  intervalMs?: number
 }
 
-export function useTraceReplay({ events, onEvent, intervalMs = 600 }: UseTraceReplayOptions) {
+function timestampGapMs(previous: TraceEvent | undefined, next: TraceEvent | undefined) {
+  if (!previous || !next) {
+    return 0
+  }
+
+  const previousTime = Date.parse(previous.timestamp)
+  const nextTime = Date.parse(next.timestamp)
+  if (!Number.isFinite(previousTime) || !Number.isFinite(nextTime)) {
+    return 0
+  }
+
+  return Math.max(0, nextTime - previousTime)
+}
+
+export function useTraceReplay({ events, onEvent }: UseTraceReplayOptions) {
   const sortedEvents = useMemo(
     () => events.slice().sort((left, right) => left.seq - right.seq),
     [events],
@@ -20,16 +33,21 @@ export function useTraceReplay({ events, onEvent, intervalMs = 600 }: UseTraceRe
     onEventRef.current = onEvent
   }, [onEvent])
 
-  const step = useCallback(() => {
-    setCurrentIndex((index) => {
-      const event = sortedEvents[index]
-      if (!event) {
-        return index
-      }
-      onEventRef.current(event)
-      return index + 1
-    })
-  }, [sortedEvents])
+  const step = useCallback((count = 1) => {
+    const stepCount = Math.max(0, Math.floor(count))
+    if (stepCount === 0) {
+      return
+    }
+
+    const nextIndex = Math.min(currentIndex + stepCount, sortedEvents.length)
+    for (let eventIndex = currentIndex; eventIndex < nextIndex; eventIndex += 1) {
+      onEventRef.current(sortedEvents[eventIndex])
+    }
+    setCurrentIndex(nextIndex)
+    if (nextIndex >= sortedEvents.length) {
+      setIsPlaying(false)
+    }
+  }, [currentIndex, sortedEvents])
 
   const restart = useCallback(() => {
     setCurrentIndex(0)
@@ -41,19 +59,19 @@ export function useTraceReplay({ events, onEvent, intervalMs = 600 }: UseTraceRe
       return
     }
     if (currentIndex >= sortedEvents.length) {
-      setIsPlaying(false)
       return
     }
-    const timer = window.setTimeout(step, intervalMs)
+    const delayMs = timestampGapMs(sortedEvents[currentIndex - 1], sortedEvents[currentIndex])
+    const timer = window.setTimeout(() => step(), delayMs)
     return () => window.clearTimeout(timer)
-  }, [currentIndex, intervalMs, isPlaying, sortedEvents.length, step])
+  }, [currentIndex, isPlaying, sortedEvents, step])
 
   return {
     currentIndex,
     total: sortedEvents.length,
     isComplete: currentIndex >= sortedEvents.length,
     isPlaying,
-    play: () => setIsPlaying(true),
+    play: () => setIsPlaying(currentIndex < sortedEvents.length),
     pause: () => setIsPlaying(false),
     restart,
     step,
