@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use anyhow::Result;
+use futures_util::future::join_all;
 use serde_json::json;
 
 use crate::{
@@ -35,9 +36,7 @@ impl ToolRegistry {
     }
 
     pub async fn execute_all(&self, tool_calls: &[ToolCall]) -> Vec<ToolExecutionResult> {
-        let mut results = Vec::with_capacity(tool_calls.len());
-
-        for tool_call in tool_calls {
+        join_all(tool_calls.iter().map(|tool_call| async move {
             debug_log!(
                 "Executing tool: name={}, id={}, args={}",
                 tool_call.function.name,
@@ -59,13 +58,12 @@ impl ToolRegistry {
                 }
             };
 
-            results.push(ToolExecutionResult {
+            ToolExecutionResult {
                 tool_call_id: tool_call.id.clone(),
                 content,
-            });
-        }
-
-        results
+            }
+        }))
+        .await
     }
 
     pub async fn execute_all_traced(
@@ -74,74 +72,89 @@ impl ToolRegistry {
         parent_model_output_id: &str,
         sink: &dyn TraceSink,
     ) -> Vec<ToolExecutionResult> {
-        let mut results = Vec::with_capacity(tool_calls.len());
+        let started_calls = tool_calls
+            .iter()
+            .enumerate()
+            .map(|(index, tool_call)| {
+                let node_id = trace_id("tool");
+                let started = Instant::now();
 
-        for (index, tool_call) in tool_calls.iter().enumerate() {
-            let node_id = trace_id("tool");
-            let started = Instant::now();
+                sink.emit(
+                    TraceEventType::ToolCallStarted,
+                    json!({
+                        "node_id": node_id,
+                        "parent_model_output_id": parent_model_output_id,
+                        "index": index,
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "arguments": JsonSnapshot::from_text(
+                            &tool_call.function.arguments,
+                            DEFAULT_SNAPSHOT_MAX_BYTES,
+                        ),
+                    }),
+                );
 
-            sink.emit(
-                TraceEventType::ToolCallStarted,
-                json!({
-                    "node_id": node_id,
-                    "parent_model_output_id": parent_model_output_id,
-                    "index": index,
-                    "tool_call_id": tool_call.id,
-                    "name": tool_call.function.name,
-                    "arguments": JsonSnapshot::from_text(
-                        &tool_call.function.arguments,
-                        DEFAULT_SNAPSHOT_MAX_BYTES,
-                    ),
-                }),
-            );
+                (node_id, started, tool_call)
+            })
+            .collect::<Vec<_>>();
 
-            debug_log!(
-                "Executing traced tool: name={}, id={}, args={}",
-                tool_call.function.name,
-                tool_call.id,
-                tool_call.function.arguments,
-            );
-
-            let content = match self.execute(tool_call).await {
-                Ok(content) => {
-                    let duration_ms = started.elapsed().as_millis() as u64;
+        join_all(
+            started_calls
+                .into_iter()
+                .map(|(node_id, started, tool_call)| async move {
                     debug_log!(
-                        "Traced tool '{}' succeeded, result length: {}",
+                        "Executing traced tool: name={}, id={}, args={}",
                         tool_call.function.name,
-                        content.len()
+                        tool_call.id,
+                        tool_call.function.arguments,
                     );
-                    sink.emit(
-                        TraceEventType::ToolCallCompleted,
-                        json!({
-                            "node_id": node_id,
-                            "duration_ms": duration_ms,
-                            "output": JsonSnapshot::from_text(&content, DEFAULT_SNAPSHOT_MAX_BYTES),
-                        }),
-                    );
-                    content
-                }
-                Err(error) => {
-                    let duration_ms = started.elapsed().as_millis() as u64;
-                    debug_log!("Traced tool '{}' failed: {error}", tool_call.function.name);
-                    sink.emit(
-                        TraceEventType::ToolCallFailed,
-                        json!({
-                            "node_id": node_id,
-                            "duration_ms": duration_ms,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    format!("Tool execution failed: {error}")
-                }
-            };
 
-            results.push(ToolExecutionResult {
-                tool_call_id: tool_call.id.clone(),
-                content,
-            });
-        }
+                    let content = match self.execute(tool_call).await {
+                        Ok(content) => {
+                            let duration_ms = started.elapsed().as_millis() as u64;
+                            let output =
+                                JsonSnapshot::from_text(&content, DEFAULT_SNAPSHOT_MAX_BYTES);
+                            debug_log!(
+                                "Traced tool '{}' succeeded, result length: {}",
+                                tool_call.function.name,
+                                content.len()
+                            );
+                            sink.emit(
+                                TraceEventType::ToolCallCompleted,
+                                json!({
+                                    "node_id": node_id,
+                                    "duration_ms": duration_ms,
+                                    "output": output,
+                                }),
+                            );
+                            content
+                        }
+                        Err(error) => {
+                            let duration_ms = started.elapsed().as_millis() as u64;
+                            let error_message = error.to_string();
+                            debug_log!(
+                                "Traced tool '{}' failed: {error_message}",
+                                tool_call.function.name
+                            );
+                            sink.emit(
+                                TraceEventType::ToolCallFailed,
+                                json!({
+                                    "node_id": node_id,
+                                    "duration_ms": duration_ms,
+                                    "error": error_message,
+                                }),
+                            );
+                            format!("Tool execution failed: {error_message}")
+                        }
+                    };
 
-        results
+                    ToolExecutionResult {
+                        tool_call_id: tool_call.id.clone(),
+                        content,
+                    }
+                }),
+        )
+        .await
     }
 
     async fn execute(&self, tool_call: &ToolCall) -> Result<String> {
@@ -161,10 +174,14 @@ pub struct ToolExecutionResult {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use anyhow::Result;
     use serde_json::Value;
+    use tokio::sync::Barrier;
 
     use super::ToolRegistry;
     use crate::{
@@ -175,6 +192,11 @@ mod tests {
 
     struct StaticProvider {
         definitions: Vec<ToolDef>,
+    }
+
+    struct BarrierProvider {
+        definitions: Vec<ToolDef>,
+        barrier: Arc<Barrier>,
     }
 
     #[async_trait::async_trait]
@@ -192,6 +214,26 @@ mod tests {
                 return Ok(Some(r#"{"ok":true}"#.into()));
             }
             Ok(None)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolProvider for BarrierProvider {
+        fn id(&self) -> &str {
+            "barrier"
+        }
+
+        fn definitions(&self) -> &[ToolDef] {
+            &self.definitions
+        }
+
+        async fn execute(&self, tool_call: &ToolCall) -> Result<Option<String>> {
+            if tool_call.function.name != "knownTool" {
+                return Ok(None);
+            }
+
+            self.barrier.wait().await;
+            Ok(Some(format!(r#"{{"id":"{}"}}"#, tool_call.id)))
         }
     }
 
@@ -245,6 +287,45 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("unknown tool")
+        );
+    }
+
+    #[tokio::test]
+    async fn traced_execution_starts_all_tools_before_any_completion() {
+        let mut registry = ToolRegistry::new();
+        registry.add_provider(Box::new(BarrierProvider {
+            definitions: vec![ToolDef::function("knownTool", "Known tool")],
+            barrier: Arc::new(Barrier::new(2)),
+        }));
+        let sink = RecordingSink::default();
+
+        let results = tokio::time::timeout(
+            Duration::from_millis(250),
+            registry.execute_all_traced(
+                &[
+                    tool_call("call_1", "knownTool"),
+                    tool_call("call_2", "knownTool"),
+                ],
+                "output_1",
+                &sink,
+            ),
+        )
+        .await
+        .expect("tool calls should execute concurrently");
+
+        assert_eq!(results.len(), 2);
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events[0].0, TraceEventType::ToolCallStarted);
+        assert_eq!(events[1].0, TraceEventType::ToolCallStarted);
+        assert!(
+            events[2..]
+                .iter()
+                .any(|event| event.0 == TraceEventType::ToolCallCompleted)
+        );
+        assert!(
+            events[2..]
+                .iter()
+                .all(|event| event.0 != TraceEventType::ToolCallStarted)
         );
     }
 

@@ -84,8 +84,8 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
         startedAt: event.timestamp,
       }
 
-    case 'task.completed':
-      return {
+    case 'task.completed': {
+      const completedState: TraceState = {
         ...base,
         status: 'succeeded',
         finalAnswer: event.payload.final_answer,
@@ -94,6 +94,13 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
         latestRunningNodeId: null,
         selectedNodeId: selectFinalOutputNode(base) ?? base.selectedNodeId,
       }
+
+      return completeRunningFinalOutput(
+        completedState,
+        event.payload.final_answer,
+        event.timestamp,
+      )
+    }
 
     case 'task.failed':
       return {
@@ -178,7 +185,6 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
       }, { latestRunningNodeId: null })
 
     case 'model_output.started': {
-      const title = event.payload.kind === 'tool_calls' ? '模型输出：工具调用' : '模型输出：生成结果'
       const detail: ModelOutputDetail = {
         type: 'model_output',
         kind: event.payload.kind,
@@ -191,14 +197,14 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
         parentId: event.payload.parent_model_call_id,
         type: 'model_output',
         status: 'running',
-        title,
-        subtitle: event.payload.kind === 'tool_calls' ? '准备调用工具' : '正在生成回复',
+        title: modelOutputTitle(event.payload.kind),
+        subtitle: modelOutputSubtitle(detail),
         round: null,
         timestamp: event.timestamp,
         detail,
       })
 
-      return upsertNode({
+      const nextState = upsertNode({
         state: {
           ...base,
           latestRunningNodeId: event.payload.node_id,
@@ -207,6 +213,10 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
         node,
         parentId: event.payload.parent_model_call_id,
       })
+
+      return event.payload.kind === 'tool_calls'
+        ? mergeSiblingContentOutputIntoToolOutput(nextState, event.payload.node_id)
+        : nextState
     }
 
     case 'model_output.delta': {
@@ -218,16 +228,17 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
           }
 
           const content = `${node.detail.content}${payload.content_delta}`
+          const detail: ModelOutputDetail = { ...node.detail, content }
           return {
             ...node,
-            subtitle: truncate(content, 180) || '正在生成回复',
-            detail: { ...node.detail, content },
+            subtitle: modelOutputSubtitle(detail),
+            detail,
           }
         }, { latestRunningNodeId: event.payload.node_id })
       }
 
       const payload = event.payload
-      return updateNode(base, event.payload.node_id, (node) => {
+      const nextState = updateNode(base, event.payload.node_id, (node) => {
         if (node.detail.type !== 'model_output') {
           return node
         }
@@ -238,16 +249,19 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
           name: payload.tool_call.name ?? `工具 ${payload.tool_call.index + 1}`,
           arguments: textSnapshot(payload.tool_call.arguments_delta ?? ''),
         })
+        const detail: ModelOutputDetail = { ...node.detail, toolCalls }
         return {
           ...node,
-          subtitle: toolSummary(toolCalls),
-          detail: { ...node.detail, toolCalls },
+          subtitle: modelOutputSubtitle(detail),
+          detail,
         }
       }, { latestRunningNodeId: event.payload.node_id })
+
+      return mergeSiblingContentOutputIntoToolOutput(nextState, event.payload.node_id)
     }
 
-    case 'model_output.completed':
-      return updateNode(base, event.payload.node_id, (node) => {
+    case 'model_output.completed': {
+      const nextState = updateNode(base, event.payload.node_id, (node) => {
         if (node.detail.type !== 'model_output') {
           return node
         }
@@ -259,22 +273,26 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
           arguments: toolCall.arguments,
         }))
         const toolCalls = completedToolCalls.length > 0 ? completedToolCalls : node.detail.toolCalls
+        const detail: ModelOutputDetail = {
+          ...node.detail,
+          kind: event.payload.kind,
+          content: event.payload.content,
+          toolCalls,
+        }
         return {
           ...node,
           status: 'succeeded',
           completedAt: event.timestamp,
-          subtitle:
-            event.payload.kind === 'tool_calls'
-              ? toolSummary(toolCalls)
-              : truncate(event.payload.content, 180),
-          detail: {
-            ...node.detail,
-            kind: event.payload.kind,
-            content: event.payload.content,
-            toolCalls,
-          },
+          title: modelOutputTitle(event.payload.kind),
+          subtitle: modelOutputSubtitle(detail),
+          detail,
         }
       }, { latestRunningNodeId: null })
+
+      return event.payload.kind === 'tool_calls'
+        ? mergeSiblingContentOutputIntoToolOutput(nextState, event.payload.node_id)
+        : nextState
+    }
 
     case 'tool_call.started': {
       const detail: ToolCallDetail = {
@@ -512,6 +530,119 @@ function selectFinalOutputNode(state: TraceState): string | null {
     }
   }
   return null
+}
+
+function mergeSiblingContentOutputIntoToolOutput(
+  state: TraceState,
+  toolOutputId: string,
+): TraceState {
+  const toolOutput = state.nodesById[toolOutputId]
+  if (
+    !toolOutput ||
+    toolOutput.detail.type !== 'model_output' ||
+    toolOutput.detail.kind !== 'tool_calls' ||
+    !toolOutput.parentId
+  ) {
+    return state
+  }
+
+  const parent = state.nodesById[toolOutput.parentId]
+  if (!parent) {
+    return state
+  }
+
+  const contentOutputId = parent.childrenIds.find((childId) => {
+    const child = state.nodesById[childId]
+    return (
+      childId !== toolOutputId &&
+      child?.detail.type === 'model_output' &&
+      child.detail.kind === 'final_answer'
+    )
+  })
+
+  if (!contentOutputId) {
+    return state
+  }
+
+  const contentOutput = state.nodesById[contentOutputId]
+  if (!contentOutput || contentOutput.detail.type !== 'model_output') {
+    return state
+  }
+
+  const content = toolOutput.detail.content || contentOutput.detail.content
+  const detail: ModelOutputDetail = { ...toolOutput.detail, content }
+  const nodesById = {
+    ...state.nodesById,
+    [parent.id]: {
+      ...parent,
+      childrenIds: parent.childrenIds.filter((childId) => childId !== contentOutputId),
+    },
+    [toolOutputId]: {
+      ...toolOutput,
+      title: modelOutputTitle('tool_calls'),
+      subtitle: modelOutputSubtitle(detail),
+      detail,
+    },
+  }
+  delete nodesById[contentOutputId]
+
+  return {
+    ...state,
+    nodesById,
+    selectedNodeId:
+      state.selectedNodeId === contentOutputId ? toolOutputId : state.selectedNodeId,
+    latestRunningNodeId:
+      state.latestRunningNodeId === contentOutputId ? toolOutputId : state.latestRunningNodeId,
+  }
+}
+
+function completeRunningFinalOutput(
+  state: TraceState,
+  finalAnswer: string,
+  completedAt: string,
+): TraceState {
+  const entry = Object.entries(state.nodesById).find(([, node]) => {
+    return (
+      node.status === 'running' &&
+      node.detail.type === 'model_output' &&
+      node.detail.kind === 'final_answer'
+    )
+  })
+
+  if (!entry) {
+    return state
+  }
+
+  const [nodeId, node] = entry
+  return {
+    ...state,
+    selectedNodeId: state.selectedNodeId ?? nodeId,
+    nodesById: {
+      ...state.nodesById,
+      [nodeId]: {
+        ...node,
+        status: 'succeeded',
+        completedAt,
+        subtitle: truncate(finalAnswer, 180),
+        detail:
+          node.detail.type === 'model_output'
+            ? { ...node.detail, content: finalAnswer }
+            : node.detail,
+      },
+    },
+  }
+}
+
+function modelOutputTitle(kind: ModelOutputDetail['kind']): string {
+  return kind === 'tool_calls' ? '工具调用' : '生成结果'
+}
+
+function modelOutputSubtitle(detail: ModelOutputDetail): string {
+  if (detail.kind === 'tool_calls') {
+    return truncate(detail.content, 180) || toolSummary(detail.toolCalls)
+  }
+
+  return truncate(detail.content, 180) || '正在生成回复'
 }
 
 function mergeSnapshots(existing: JsonSnapshot, incoming: JsonSnapshot): JsonSnapshot {
