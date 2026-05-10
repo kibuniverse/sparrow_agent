@@ -1,26 +1,43 @@
 # Sparrow Agent
 
-一个最小可运行的 Rust Agent 示例，支持基础对话、工具调用、Web 搜索和 WASM 沙盒代码执行。
+Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行，以及基于 MCP filesystem server 的受控文件系统工具。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
 
 ## 功能特性
 
-- **多轮对话**：维护完整消息历史，支持上下文连续对话
-- **工具调用循环**：模型可自动调用工具并获取结果，最多连续 6 轮工具调用
-- **深度思考模式**：启用 DeepSeek 的 thinking/reasoning 模式，支持可配置的推理强度
-- **Agent 调用可视化**：可启动 HTTP/SSE 服务，向前端实时推送模型调用、模型输出和工具调用 trace
-- **Web 搜索**：通过 Tavily API 搜索网页信息
-- **WASM 沙盒执行**：将 LLM 生成的 Rust 代码编译为 WASM 并在安全沙盒中运行
-- **安全配置管理**：API 密钥安全存储，支持环境变量优先覆盖
+- **多轮对话**：CLI 和 Server 模式都会为会话维护消息历史，支持连续上下文对话。
+- **流式输出**：默认启用 DeepSeek SSE 流式调用，可在 CLI 展示 reasoning 与最终回答，在 Server 模式转成结构化 trace。
+- **工具调用循环**：模型可连续请求工具，工具结果会回填到消息历史后继续请求模型。
+- **并行工具执行**：同一轮模型返回的多个工具调用会并发执行，并在 trace 中独立记录开始、完成和失败事件。
+- **可插拔工具提供者**：本地工具和 MCP 工具统一实现 `ToolProvider`，由 `ToolRegistry` 汇总定义并分发调用。
+- **Web 搜索**：内置 `webSearch`，通过 Tavily API 返回答案、摘要和来源链接。
+- **Rust WASM 沙盒执行**：内置 `runRustWasm`，将模型生成的 Rust 代码编译到 `wasm32-unknown-unknown` 并用 wasmtime 隔离执行。
+- **MCP 文件系统工具**：默认尝试通过 `npx @modelcontextprotocol/server-filesystem` 接入文件系统工具，支持 roots、只读/读写模式、写入确认和敏感路径 denylist。
+- **Agent 调用可视化**：HTTP API + SSE 会推送 task、model call、model output、tool call 等结构化事件，前端可实时展示调用树和详情。
+- **安全配置管理**：API 密钥可交互式初始化并保存到本地配置文件，也可由环境变量覆盖。
 
-## 运行
+## 快速开始
 
-首次运行时可以直接启动，命令行会引导输入 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，并保存到 `~/.sparrow_agent/config.json`：
+### 依赖准备
+
+- Rust toolchain，项目使用 Rust 2024 edition。
+- 如需运行 `runRustWasm`，安装 WASM 编译目标：
+
+```bash
+rustup target add wasm32-unknown-unknown
+```
+
+- 如需默认 MCP 文件系统工具，确保本机可运行 `npx`。
+- 如需前端开发服务，安装 `pnpm`。
+
+### 配置 API Key
+
+首次运行时，如果没有检测到环境变量或配置文件，命令行会提示输入 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，并保存到 `~/.sparrow_agent/config.json`：
 
 ```bash
 cargo run
 ```
 
-如果已经配置环境变量，环境变量会优先生效：
+也可以通过环境变量直接提供，环境变量优先级高于配置文件：
 
 ```bash
 export DEEPSEEK_API_KEY=your_deepseek_api_key
@@ -30,7 +47,23 @@ cargo run
 
 启动后输入自然语言问题即可对话，输入 `exit` 或 `quit` 退出。
 
-### 启动可视化服务
+## CLI 模式
+
+默认模式是命令行对话：
+
+```bash
+cargo run
+```
+
+CLI 每轮输入前会显示上下文窗口使用情况。当前代码对 `deepseek-v4-flash` 和 `deepseek-v4-pro` 按 1,000,000 token 上下文窗口渲染进度条，其他模型显示未知窗口大小。
+
+流式输出默认开启：
+
+- reasoning 内容按流式增量展示；
+- 最终回答按流式增量展示；
+- 工具调用参数增量默认不展示，可通过环境变量打开。
+
+## Server 与前端模式
 
 后端服务默认监听 `127.0.0.1:8787`：
 
@@ -44,133 +77,239 @@ cargo run -- --server
 SPARROW_SERVER_ADDR=127.0.0.1:8787 cargo run -- --server
 ```
 
-前端开发服务会把 `/api` 代理到该后端地址：
+前端开发服务会把 `/api` 代理到 `http://127.0.0.1:8787`：
 
 ```bash
 cd frontend
+pnpm install
 pnpm dev
 ```
 
-核心接口：
+前端能力：
+
+- 聊天页创建流式 Agent 任务；
+- 展示最新 reasoning 预览；
+- 任务详情页加载 task snapshot；
+- 通过 SSE 实时合并 trace 事件；
+- 将模型调用、模型输出和工具调用归并为可选中的调用树；
+- EventSource 断线后会按 1s、2s、5s、10s 退避重连，并使用 `after_seq` 续传。
+
+## HTTP API
 
 | 接口 | 说明 |
 |------|------|
-| `GET /api/health` | 健康检查 |
-| `POST /api/agent/tasks` | 创建 Agent 任务 |
+| `GET /api/health` | 健康检查，返回 `{ "ok": true }` |
+| `POST /api/agent/tasks` | 创建流式 Agent 任务，目前仅支持 `stream: true` |
 | `GET /api/agent/tasks/:task_id` | 获取任务快照和历史 trace |
-| `GET /api/agent/tasks/:task_id/events?after_seq=0` | 订阅 trace SSE 事件 |
+| `GET /api/agent/tasks/:task_id/events?after_seq=0` | 订阅 trace SSE 事件，先 replay 历史事件，再推送 live 事件 |
+
+创建任务请求：
+
+```json
+{
+  "conversation_id": null,
+  "client_message_id": "msg_...",
+  "message": "帮我分析这个项目",
+  "stream": true
+}
+```
+
+同一个 `conversation_id` 同时只能运行一个任务；如果会话忙，接口返回 `409 conversation_busy`。同一个 `client_message_id` 会复用已有任务，避免重复提交。
 
 ## 配置
 
 ### 环境变量
 
-| 变量 | 说明 | 优先级 |
+| 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `DEEPSEEK_API_KEY` | DeepSeek API 密钥（必需） | 高于配置文件 |
-| `TAVILY_API_KEY` | Tavily 搜索 API 密钥（必需） | 高于配置文件 |
-| `SPARROW_CONFIG_PATH` | 自定义配置文件路径（可选） | — |
-| `SPARROW_DEBUG` | 启用调试日志，设为任意值开启（可选） | — |
-| `SPARROW_SERVER_ADDR` | Server 模式监听地址，默认 `127.0.0.1:8787` | — |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 必需，除非配置文件已保存 |
+| `TAVILY_API_KEY` | Tavily API 密钥 | 必需，除非配置文件已保存 |
+| `SPARROW_CONFIG_PATH` | 自定义配置文件路径 | `~/.sparrow_agent/config.json` |
+| `SPARROW_DEBUG` | 启用调试日志，设为任意值开启 | 关闭 |
+| `SPARROW_SERVER_ADDR` | Server 模式监听地址 | `127.0.0.1:8787` |
+| `SPARROW_STREAMING_ENABLED` | 是否启用模型流式调用 | `true` |
+| `SPARROW_SHOW_REASONING` | CLI 是否展示 reasoning | `true` |
+| `SPARROW_SHOW_TOOL_CALL_DELTAS` | CLI 是否展示工具调用参数增量 | `false` |
+| `SPARROW_FILESYSTEM_ENABLED` | 是否启用 MCP 文件系统工具 | `true` |
+| `SPARROW_FILESYSTEM_ROOTS` | 允许访问的根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
+| `SPARROW_FILESYSTEM_MODE` | 文件系统模式：`read-only` 或 `read-write` | `read-only` |
+| `SPARROW_FILESYSTEM_CONFIRM` | 确认策略：`never`、`writes`、`always` | `writes` |
+| `SPARROW_MCP_FILESYSTEM_COMMAND` | MCP filesystem server 启动命令 | `npx` |
+| `SPARROW_MCP_FILESYSTEM_ARGS` | MCP filesystem server 参数，JSON 字符串数组 | `["-y","@modelcontextprotocol/server-filesystem","/Users/yankaizhi/RustProjects/sparrow_agent"]` |
 
-### 默认配置
+### 默认运行参数
 
 | 配置项 | 默认值 |
 |--------|--------|
-| 模型 | `deepseek-v4-flash` |
+| 模型 | `deepseek-v4-pro` |
 | 系统提示词 | `You are a helpful assistant.` |
 | 推理强度 | `high` |
-| 最大工具调用轮数 | `6` |
+| 最大工具调用轮数 | `100` |
+| 文件系统最大读取字节数 | `262144` |
+| 文件系统最大写入字节数 | `262144` |
 
 ### 配置文件
 
-配置文件存储在 `~/.sparrow_agent/config.json`，Unix 系统上文件权限为 `0600`（仅所有者可读写）。
+配置文件只保存 API key：
+
+```json
+{
+  "deepseek_api_key": "...",
+  "tavily_api_key": "..."
+}
+```
+
+Unix 系统上文件权限会设置为 `0600`。运行参数目前主要通过环境变量控制。
 
 ## 架构
 
+```text
+CLI / React Frontend
+        |
+        v
+ main.rs / server.rs
+        |
+        v
+ ConversationStore  ->  Agent
+                         |
+                         v
+                  DeepSeekClient
+                         |
+               streamed / non-streamed response
+                         |
+                         v
+                   ToolRegistry
+                  /            \
+                 v              v
+        LocalToolProvider   McpToolProvider
+          |        |             |
+          v        v             v
+     webSearch  runRustWasm  MCP filesystem tools
 ```
-用户输入 → Agent 编排器 → DeepSeek API
-               ↑              ↓
-          工具结果 ← 工具注册器 ← 工具调用
-                           ↓
-              ┌────────────┼────────────┐
-              ↓            ↓            ↓
-          getWeather   webSearch   runRustWasm
-                                    ↓
-                            WASM 沙盒执行
-```
 
-Agent 编排器驱动多轮工具循环：发送消息 → 接收响应 → 若含工具调用则执行工具 → 将结果追加到消息历史 → 再次请求模型，直到模型返回文本回复或达到最大轮数。
+核心流程：
 
-Server 模式会为每个前端任务创建结构化 `TraceEvent`，事件按 `seq` 递增写入内存 `TraceStore`，并通过 SSE 先 replay 历史事件、再广播 live 事件。前端只消费 `task.*`、`model_call.*`、`model_output.*` 和 `tool_call.*` 事件，不需要解析 DeepSeek 原始 SSE。
+1. `main.rs` 加载 `AppConfig`，根据是否传入 `--server` 启动 CLI 或 Axum Server。
+2. `Agent` 维护 `ChatMessage` 历史，构造 DeepSeek Chat Completion 请求，并开启 thinking/reasoning 配置。
+3. `DeepSeekClient` 负责普通请求和 SSE 流式请求；流式响应由 `StreamAccumulator` 归并为完整 assistant message。
+4. 如果 assistant message 包含工具调用，`ToolRegistry` 将调用分发给对应 provider，并行执行同一轮工具。
+5. 工具结果作为 `tool` message 追加回历史，Agent 进入下一轮模型请求，直到返回最终文本或达到最大轮数。
+6. Server 模式下，`TraceStoreSink` 把关键阶段写入内存 `TraceStore`，前端通过 snapshot 和 SSE 消费这些事件。
 
-## 设计文档
+## Trace 事件模型
 
-- [文件读写能力实现方案](docs/filesystem-capability-implementation-plan.md)：基于 MCP filesystem server、Roots、工具确认和路径沙箱的实现规划。
-- [上下文窗口治理方案](docs/context-window-management-plan.md)：针对 `read_file` 等大工具输出导致上下文溢出的通用治理方案。
-- [模型思考过程流式展示方案](docs/streaming-thinking-display-plan.md)：分析现有 DeepSeek 调用链，并规划 CLI 与前端的流式 reasoning trace 展示。
-- [Agent 调用过程可视化 Agent 方案](docs/agent-call-visualization-agent-plan.md)：定义 Rust Agent trace、HTTP API 和 SSE 契约。
-- [Agent 调用过程可视化 Frontend 方案](docs/agent-call-visualization-frontend-plan.md)：定义聊天页、任务详情页和前端事件归并模型。
+后端 trace 事件按 task 递增 `seq`，事件负载中的 JSON 快照会自动脱敏 `api_key`、`token`、`authorization`、`password`、`secret` 等字段，并限制最大快照大小。
+
+主要事件类型：
+
+| 类型 | 说明 |
+|------|------|
+| `task.started` / `task.completed` / `task.failed` | 任务生命周期 |
+| `model_call.started` / `model_call.reasoning_delta` / `model_call.completed` | 模型调用、reasoning 增量和用量信息 |
+| `model_output.started` / `model_output.delta` / `model_output.completed` | 最终回答或工具调用输出 |
+| `tool_call.started` / `tool_call.completed` / `tool_call.failed` | 单个工具调用生命周期 |
+
+`TraceStore` 默认每个任务最多保留 10,000 个事件，超过限制会将任务标记为 failed。
 
 ## 已内置工具
 
-| 工具名 | 说明 |
-|--------|------|
-| `getWeather` | 返回指定地点的示例天气结果（演示用） |
-| `webSearch` | 通过 Tavily API 搜索网页，返回摘要和来源链接 |
-| `runRustWasm` | 将 Rust 代码编译为 WASM 并在沙盒中安全执行 |
+| 工具名 | Provider | 说明 |
+|--------|----------|------|
+| `webSearch` | local | 使用 Tavily 搜索网页，最多返回 5 条结果和 Tavily answer |
+| `runRustWasm` | local | 编译并执行定义了 `pub fn run() -> String` 的 Rust 代码 |
+| `mcp__filesystem__*` | MCP | 来自 `@modelcontextprotocol/server-filesystem` 的文件系统工具，具体列表由 MCP server 动态发现 |
+
+`src/tools.rs` 中仍保留了演示用 `get_weather` 函数，但当前 `LocalToolProvider` 没有注册 `getWeather` 工具。
 
 ## WASM 沙盒
 
-`runRustWasm` 工具将 LLM 生成的 Rust 代码安全执行，具备以下安全机制：
+`runRustWasm` 会在临时目录生成一个最小 Rust crate，编译为 `cdylib` WASM 后用 wasmtime 执行。用户代码必须定义：
 
-- **Fuel 计量**：初始 Fuel 为 1,000,000，防止无限循环
-- **无 WASI**：不注入文件系统、网络、环境变量等宿主接口，代码完全隔离
-- **编译超时**：10 秒编译超时限制
-- **输出限制**：结果最大 64 KiB，编译 stderr 最大 16 KiB
-- **内存安全**：通过 wastime 导出内存读取结果，含边界检查
+```rust
+pub fn run() -> String {
+    "hello from wasm".to_string()
+}
+```
 
-用户代码需定义 `pub fn run() -> String`，编译目标为 `wasm32-unknown-unknown`。
+安全与资源限制：
+
+- **无 WASI**：不注入文件系统、网络、环境变量等宿主接口。
+- **Fuel 计量**：初始 fuel 为 `1_000_000`，用于限制长时间运行。
+- **编译超时**：`cargo build --release --target wasm32-unknown-unknown` 限制 10 秒。
+- **输出限制**：结果最大 64 KiB。
+- **错误限制**：编译 stderr 最多保留 16 KiB。
+- **内存边界检查**：通过导出的 `result_ptr` / `result_len` 从 WASM memory 读取结果。
+
+## MCP 文件系统安全边界
+
+文件系统工具默认启用，但默认模式是 `read-only`，写入类工具不会暴露给模型。切换到读写模式：
+
+```bash
+SPARROW_FILESYSTEM_MODE=read-write cargo run
+```
+
+安全措施：
+
+- 只允许访问 `SPARROW_FILESYSTEM_ROOTS` 内的路径；
+- 默认拒绝 `.git/**`、`.env`、`.env.*`、私钥、证书、`.sparrow_agent/**` 等敏感路径；
+- `read-write` 模式下写入工具默认需要用户确认；
+- `edit_file` 会先执行 dry run，展示 diff 后再次确认才会应用；
+- MCP 工具名会命名空间化为 `mcp__{server_id}__{tool_name}`，避免和本地工具重名。
 
 ## 模块结构
 
-| 文件 | 说明 |
+| 路径 | 说明 |
 |------|------|
-| `src/main.rs` | 二进制入口，加载配置、启动 REPL、转发用户输入 |
-| `src/lib.rs` | 库入口，集中导出项目模块 |
-| `src/config.rs` | 应用配置加载与持久化，API 密钥交互式输入 |
-| `src/server.rs` | Axum HTTP/SSE 服务，暴露任务创建、快照和事件订阅接口 |
-| `src/conversation_store.rs` | Server 模式下的会话 Agent 与 running task 管理 |
+| `src/main.rs` | 二进制入口，加载配置，启动 CLI REPL 或 Server |
+| `src/lib.rs` | 库入口，导出项目模块 |
+| `src/config.rs` | 应用配置、API key 初始化、filesystem/MCP/streaming 环境变量 |
+| `src/agent.rs` | Agent 编排器，维护消息历史、模型请求、工具循环、trace 转发 |
+| `src/client.rs` | DeepSeek HTTP/SSE 客户端 |
+| `src/api.rs` | DeepSeek Chat Completion 请求、响应和工具调用数据结构 |
+| `src/streaming.rs` | 流式响应累积器和 Agent stream event 抽象 |
+| `src/tool_provider.rs` | 工具 provider trait |
+| `src/tool_registry.rs` | 工具定义汇总、调用分发、并行执行和 traced execution |
+| `src/local_tools.rs` | 本地工具 provider，注册 `webSearch` 和 `runRustWasm` |
+| `src/tools.rs` | Tavily 搜索和 WASM 工具入口 |
+| `src/rust_wasm_runner.rs` | Rust 到 WASM 的编译与 wasmtime 沙盒运行 |
+| `src/mcp/` | MCP stdio transport、JSON-RPC protocol、client 和 filesystem provider |
+| `src/server.rs` | Axum HTTP API、SSE、CORS 和任务创建逻辑 |
+| `src/conversation_store.rs` | Server 模式下按 conversation 复用 Agent，并限制同会话并发任务 |
 | `src/trace.rs` | Trace 事件类型、JSON 快照、截断和敏感字段脱敏 |
-| `src/trace_store.rs` | 内存任务事件存储、seq 管理和 SSE broadcast |
-| `src/console.rs` | 命令行输入输出，密钥安全输入（禁用回显） |
-| `src/agent.rs` | Agent 编排器，维护消息历史、构造请求、驱动工具循环 |
-| `src/tool_registry.rs` | 工具定义注册、参数 JSON 解析和调用分发 |
-| `src/tools.rs` | 具体工具实现：天气示例、Tavily 搜索、WASM 执行入口 |
-| `src/client.rs` | DeepSeek HTTP 客户端，发送 Chat Completion 请求 |
-| `src/api.rs` | DeepSeek Chat Completion 请求和响应数据结构 |
-| `src/rust_wasm_runner.rs` | Rust→WASM 编译与 wastime 沙盒执行 |
-| `src/debug.rs` | 调试日志工具，通过 `SPARROW_DEBUG` 环境变量控制 |
+| `src/trace_store.rs` | 内存 task/event 存储、seq 管理、snapshot 和 broadcast |
+| `src/console.rs` | CLI 输入、密钥输入和流式渲染 |
+| `src/debug.rs` | 调试日志开关 |
+| `frontend/src/` | React 前端，包含聊天页、任务详情页、trace reducer 和 SSE hook |
+| `tests/` | Server、Trace 和 TraceStore 的契约测试 |
+| `docs/` | 功能设计方案和历史实施计划 |
 
-## 依赖
+## 测试与检查
 
-| 依赖 | 用途 |
-|------|------|
-| `tokio` | 异步运行时 |
-| `axum` / `tower-http` | HTTP API、SSE 和 CORS |
-| `reqwest` | HTTP 客户端，调用 DeepSeek 和 Tavily API |
-| `serde` / `serde_json` | JSON 序列化与反序列化 |
-| `chrono` / `ulid` | Trace timestamp 和任务/节点 ID |
-| `wasmtime` | WASM 运行时，执行沙盒代码 |
-| `anyhow` | 错误处理与上下文传播 |
-| `tempfile` | 为 WASM 编译创建临时目录 |
-
-## 检查
+根项目：
 
 ```bash
 cargo fmt --check
 cargo check
 cargo test
 ```
+
+前端：
+
+```bash
+cd frontend
+pnpm lint
+pnpm test
+pnpm build
+```
+
+## 设计文档
+
+- [文件读写能力实现方案](docs/filesystem-capability-implementation-plan.md)
+- [上下文窗口治理方案](docs/context-window-management-plan.md)
+- [模型思考过程流式展示方案](docs/streaming-thinking-display-plan.md)
+- [Agent 调用过程可视化 Agent 方案](docs/agent-call-visualization-agent-plan.md)
+- [Agent 调用过程可视化 Frontend 方案](docs/agent-call-visualization-frontend-plan.md)
+- [Frontend Loop Tool Parallel Fix 计划](docs/superpowers/plans/2026-05-10-frontend-loop-tool-parallel-fix.md)
 
 ## 许可证
 
