@@ -253,7 +253,7 @@ data: {"seq":12,"task_id":"task_01JZ4N18T4BSX2G6X93K5E8GAT","conversation_id":"c
     "index": 0,
     "tool_call_id": "call_abc",
     "name": "webSearch",
-    "arguments_delta": "{\"query\":\"sparrow agent\""
+    "arguments_delta": "{\"query\":\"sparrow agent\"}"
   }
 }
 ```

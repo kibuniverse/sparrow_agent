@@ -2,7 +2,9 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 
 use crate::{
-    api::{ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStreamChunk},
+    api::{
+        ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStreamChunk, StreamOptions,
+    },
     debug_log,
 };
 
@@ -15,6 +17,36 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
             end -= 1;
         }
         &s[..end]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::{ChatCompletionRequest, StreamOptions};
+
+    use super::streaming_request;
+
+    #[test]
+    fn streaming_request_includes_usage_options() {
+        let request = ChatCompletionRequest {
+            model: "deepseek-chat".into(),
+            messages: Vec::new(),
+            tools: None,
+            thinking: None,
+            reasoning_effort: None,
+            stream: None,
+            stream_options: None,
+        };
+
+        let request = streaming_request(&request);
+
+        assert_eq!(request.stream, Some(true));
+        assert!(matches!(
+            request.stream_options,
+            Some(StreamOptions {
+                include_usage: true
+            })
+        ));
     }
 }
 
@@ -84,9 +116,7 @@ impl DeepSeekClient {
         &self,
         request: &ChatCompletionRequest,
     ) -> impl futures_util::Stream<Item = Result<ChatCompletionStreamChunk>> + '_ {
-        let mut stream_request = request.clone();
-        stream_request.stream = Some(true);
-        stream_request.stream_options = None;
+        let stream_request = streaming_request(request);
 
         debug_log!(
             "Sending streaming request, payload:\n{}",
@@ -187,4 +217,13 @@ impl DeepSeekClient {
             debug_log!("Stream byte stream ended");
         }
     }
+}
+
+fn streaming_request(request: &ChatCompletionRequest) -> ChatCompletionRequest {
+    let mut stream_request = request.clone();
+    stream_request.stream = Some(true);
+    stream_request.stream_options = Some(StreamOptions {
+        include_usage: true,
+    });
+    stream_request
 }

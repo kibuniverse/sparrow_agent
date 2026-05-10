@@ -3,6 +3,7 @@ use sparrow_agent::{
     agent::Agent,
     config::AppConfig,
     console::{is_exit_command, read_user_input},
+    server::run_server,
 };
 
 #[tokio::main]
@@ -16,6 +17,14 @@ async fn main() {
 async fn run() -> Result<()> {
     sparrow_agent::debug::init();
     let config = AppConfig::load_or_initialize()?;
+
+    if std::env::args().any(|arg| arg == "--server") {
+        let addr = std::env::var("SPARROW_SERVER_ADDR")
+            .unwrap_or_else(|_| "127.0.0.1:8787".into())
+            .parse()?;
+        return run_server(config, addr).await;
+    }
+
     let mut agent = Agent::new(config).await?;
 
     println!("Sparrow Agent ready. Type 'exit' or 'quit' to stop.");
