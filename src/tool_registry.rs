@@ -8,19 +8,28 @@ use crate::{
     api::{ToolCall, ToolDef},
     debug_log,
     tool_provider::ToolProvider,
+    tool_result_processor::{
+        ProcessedToolResult, ToolResultInput, ToolResultMetadata, ToolResultProcessor,
+    },
     trace::{DEFAULT_SNAPSHOT_MAX_BYTES, JsonSnapshot, TraceEventType, TraceSink, trace_id},
 };
 
 pub struct ToolRegistry {
     providers: Vec<Box<dyn ToolProvider>>,
     definitions: Vec<ToolDef>,
+    result_processor: ToolResultProcessor,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
+        Self::with_result_processor(ToolResultProcessor::default())
+    }
+
+    pub fn with_result_processor(result_processor: ToolResultProcessor) -> Self {
         Self {
             providers: Vec::new(),
             definitions: Vec::new(),
+            result_processor,
         }
     }
 
@@ -43,24 +52,37 @@ impl ToolRegistry {
                 tool_call.id,
                 tool_call.function.arguments,
             );
-            let content = match self.execute(tool_call).await {
-                Ok(content) => {
+            let (content, metadata) = match self.execute_and_process(tool_call).await {
+                Ok(processed) => {
                     debug_log!(
-                        "Tool '{}' succeeded, result length: {}",
+                        "Tool '{}' succeeded, original chars: {}, injected chars: {}, truncated: {}",
                         tool_call.function.name,
-                        content.len()
+                        processed.metadata.original_chars,
+                        processed.metadata.injected_chars,
+                        processed.metadata.truncated,
                     );
-                    content
+                    (processed.content, processed.metadata)
                 }
                 Err(error) => {
                     debug_log!("Tool '{}' failed: {error}", tool_call.function.name);
-                    format!("Tool execution failed: {error}")
+                    let content = format!("Tool execution failed: {error}");
+                    let chars = content.chars().count();
+                    (
+                        content,
+                        ToolResultMetadata {
+                            original_chars: chars,
+                            injected_chars: chars,
+                            truncated: false,
+                            artifact_path: None,
+                        },
+                    )
                 }
             };
 
             ToolExecutionResult {
                 tool_call_id: tool_call.id.clone(),
                 content,
+                metadata,
             }
         }))
         .await
@@ -109,15 +131,20 @@ impl ToolRegistry {
                         tool_call.function.arguments,
                     );
 
-                    let content = match self.execute(tool_call).await {
-                        Ok(content) => {
+                    let (content, metadata) = match self.execute_and_process(tool_call).await {
+                        Ok(processed) => {
                             let duration_ms = started.elapsed().as_millis() as u64;
-                            let output =
-                                JsonSnapshot::from_text(&content, DEFAULT_SNAPSHOT_MAX_BYTES);
+                            let output = JsonSnapshot::from_text(
+                                &processed.content,
+                                DEFAULT_SNAPSHOT_MAX_BYTES,
+                            );
+                            let metadata = processed.metadata;
                             debug_log!(
-                                "Traced tool '{}' succeeded, result length: {}",
+                                "Traced tool '{}' succeeded, original chars: {}, injected chars: {}, truncated: {}",
                                 tool_call.function.name,
-                                content.len()
+                                metadata.original_chars,
+                                metadata.injected_chars,
+                                metadata.truncated,
                             );
                             sink.emit(
                                 TraceEventType::ToolCallCompleted,
@@ -125,9 +152,10 @@ impl ToolRegistry {
                                     "node_id": node_id,
                                     "duration_ms": duration_ms,
                                     "output": output,
+                                    "output_metadata": tool_result_metadata_json(&metadata),
                                 }),
                             );
-                            content
+                            (processed.content, metadata)
                         }
                         Err(error) => {
                             let duration_ms = started.elapsed().as_millis() as u64;
@@ -144,17 +172,37 @@ impl ToolRegistry {
                                     "error": error_message,
                                 }),
                             );
-                            format!("Tool execution failed: {error_message}")
+                            let content = format!("Tool execution failed: {error_message}");
+                            let chars = content.chars().count();
+                            (
+                                content,
+                                ToolResultMetadata {
+                                    original_chars: chars,
+                                    injected_chars: chars,
+                                    truncated: false,
+                                    artifact_path: None,
+                                },
+                            )
                         }
                     };
 
                     ToolExecutionResult {
                         tool_call_id: tool_call.id.clone(),
                         content,
+                        metadata,
                     }
                 }),
         )
         .await
+    }
+
+    async fn execute_and_process(&self, tool_call: &ToolCall) -> Result<ProcessedToolResult> {
+        let content = self.execute(tool_call).await?;
+        self.result_processor.process(ToolResultInput {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.function.name.clone(),
+            content,
+        })
     }
 
     async fn execute(&self, tool_call: &ToolCall) -> Result<String> {
@@ -170,6 +218,16 @@ impl ToolRegistry {
 pub struct ToolExecutionResult {
     pub tool_call_id: String,
     pub content: String,
+    pub metadata: ToolResultMetadata,
+}
+
+fn tool_result_metadata_json(metadata: &ToolResultMetadata) -> serde_json::Value {
+    json!({
+        "original_chars": metadata.original_chars,
+        "injected_chars": metadata.injected_chars,
+        "truncated": metadata.truncated,
+        "artifact_path": metadata.artifact_path_display(),
+    })
 }
 
 #[cfg(test)]
@@ -197,6 +255,11 @@ mod tests {
     struct BarrierProvider {
         definitions: Vec<ToolDef>,
         barrier: Arc<Barrier>,
+    }
+
+    struct LargeOutputProvider {
+        definitions: Vec<ToolDef>,
+        content: String,
     }
 
     #[async_trait::async_trait]
@@ -237,6 +300,24 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl ToolProvider for LargeOutputProvider {
+        fn id(&self) -> &str {
+            "large-output"
+        }
+
+        fn definitions(&self) -> &[ToolDef] {
+            &self.definitions
+        }
+
+        async fn execute(&self, tool_call: &ToolCall) -> Result<Option<String>> {
+            if tool_call.function.name == "largeTool" {
+                return Ok(Some(self.content.clone()));
+            }
+            Ok(None)
+        }
+    }
+
     #[derive(Default)]
     struct RecordingSink {
         events: Mutex<Vec<(TraceEventType, Value)>>,
@@ -267,6 +348,74 @@ mod tests {
         assert_eq!(events[0].1["name"], "knownTool");
         assert_eq!(events[1].0, TraceEventType::ToolCallCompleted);
         assert_eq!(events[1].1["output"]["value"]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn execute_all_truncates_large_tool_output_and_saves_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let processor = crate::tool_result_processor::ToolResultProcessor::new(
+            crate::tool_result_processor::ToolResultProcessorConfig {
+                max_injected_chars: 420,
+                output_dir: temp.path().join("tool_outputs"),
+            },
+        );
+        let original = "large-output-line\n".repeat(80);
+        let mut registry = ToolRegistry::with_result_processor(processor);
+        registry.add_provider(Box::new(LargeOutputProvider {
+            definitions: vec![ToolDef::function("largeTool", "Large output tool")],
+            content: original.clone(),
+        }));
+
+        let results = registry
+            .execute_all(&[tool_call("call_large", "largeTool")])
+            .await;
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].metadata.truncated);
+        assert!(results[0].content.contains("工具输出过长"));
+        assert!(results[0].content.chars().count() <= 420);
+        let artifact_path = results[0].metadata.artifact_path.as_ref().unwrap();
+        assert_eq!(std::fs::read_to_string(artifact_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn execute_all_traced_emits_processed_output_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let processor = crate::tool_result_processor::ToolResultProcessor::new(
+            crate::tool_result_processor::ToolResultProcessorConfig {
+                max_injected_chars: 220,
+                output_dir: temp.path().join("tool_outputs"),
+            },
+        );
+        let original = "trace-large-output\n".repeat(80);
+        let mut registry = ToolRegistry::with_result_processor(processor);
+        registry.add_provider(Box::new(LargeOutputProvider {
+            definitions: vec![ToolDef::function("largeTool", "Large output tool")],
+            content: original.clone(),
+        }));
+        let sink = RecordingSink::default();
+
+        let results = registry
+            .execute_all_traced(&[tool_call("call_large", "largeTool")], "output_1", &sink)
+            .await;
+
+        assert!(results[0].metadata.truncated);
+        let events = sink.events.lock().unwrap();
+        let completed = events
+            .iter()
+            .find(|event| event.0 == TraceEventType::ToolCallCompleted)
+            .unwrap();
+        assert_eq!(completed.1["output_metadata"]["truncated"], true);
+        assert_eq!(
+            completed.1["output_metadata"]["original_chars"],
+            original.chars().count(),
+        );
+        assert!(
+            completed.1["output_metadata"]["artifact_path"]
+                .as_str()
+                .unwrap()
+                .contains("tool_outputs")
+        );
     }
 
     #[tokio::test]

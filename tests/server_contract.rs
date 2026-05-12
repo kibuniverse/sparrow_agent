@@ -6,7 +6,10 @@ use axum::{
 };
 use serde_json::json;
 use sparrow_agent::{
-    config::{AppConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode, StreamingConfig},
+    config::{
+        AppConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode, StreamingConfig,
+        ToolResultConfig,
+    },
     server::{ServerState, build_router},
     trace::TraceEventType,
     trace_store::{TaskSnapshot, TraceStore},
@@ -229,6 +232,10 @@ fn test_config() -> AppConfig {
             max_write_bytes: 1,
         },
         mcp_servers: Vec::new(),
+        tool_results: ToolResultConfig {
+            max_injected_chars: 20_000,
+            output_dir: ".sparrow_agent/tool_outputs".into(),
+        },
         streaming: StreamingConfig {
             enabled: true,
             show_reasoning: true,

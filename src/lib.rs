@@ -12,6 +12,7 @@ pub mod server;
 pub mod streaming;
 pub mod tool_provider;
 pub mod tool_registry;
+pub mod tool_result_processor;
 pub mod tools;
 pub mod trace;
 pub mod trace_store;

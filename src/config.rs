@@ -7,10 +7,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::console::read_secret_input;
+use crate::{console::read_secret_input, tool_result_processor::DEFAULT_TOOL_RESULT_MAX_CHARS};
 
 const DEFAULT_MODEL: &str = "deepseek-v4-pro";
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. when read the file, ignore the build targer files like target dir in rust project, ouptput or dist dir in frontend project.  do not reade the entire project dir tree. read the file in entry file first. do not use the mcp__filesystem__directory_tree in root dir, it maybe cause the context exceed";
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. when read the file, ignore the build targer files like target dir in rust project, ouptput or dist dir in frontend project.  do not reade the entire project dir tree. read the file in entry file first.";
 const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 const CONFIG_DIR_NAME: &str = ".sparrow_agent";
@@ -18,6 +18,7 @@ const CONFIG_FILE_NAME: &str = "config.json";
 
 const DEFAULT_MAX_READ_BYTES: u64 = 262_144;
 const DEFAULT_MAX_WRITE_BYTES: u64 = 262_144;
+const DEFAULT_TOOL_OUTPUT_DIR: &str = ".sparrow_agent/tool_outputs";
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -29,6 +30,7 @@ pub struct AppConfig {
     pub max_tool_rounds: usize,
     pub filesystem: FilesystemConfig,
     pub mcp_servers: Vec<McpServerConfig>,
+    pub tool_results: ToolResultConfig,
     pub streaming: StreamingConfig,
 }
 
@@ -85,6 +87,7 @@ impl AppConfig {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             filesystem: FilesystemConfig::from_env(),
             mcp_servers: vec![McpServerConfig::default_filesystem()],
+            tool_results: ToolResultConfig::from_env(),
             streaming: StreamingConfig::from_env(),
         })
     }
@@ -104,6 +107,7 @@ impl AppConfig {
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             filesystem: FilesystemConfig::from_env(),
             mcp_servers: vec![McpServerConfig::default_filesystem()],
+            tool_results: ToolResultConfig::from_env(),
             streaming: StreamingConfig::from_env(),
         })
     }
@@ -341,6 +345,35 @@ impl McpServerConfig {
             command,
             args,
             enabled: true,
+        }
+    }
+}
+
+// ── Tool result config ────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ToolResultConfig {
+    pub max_injected_chars: usize,
+    pub output_dir: PathBuf,
+}
+
+impl ToolResultConfig {
+    pub fn from_env() -> Self {
+        let max_injected_chars = env::var("SPARROW_TOOL_RESULT_MAX_CHARS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_TOOL_RESULT_MAX_CHARS);
+
+        let output_dir = env::var("SPARROW_TOOL_OUTPUT_DIR")
+            .ok()
+            .and_then(|value| clean_value(&value))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_TOOL_OUTPUT_DIR));
+
+        Self {
+            max_injected_chars,
+            output_dir,
         }
     }
 }

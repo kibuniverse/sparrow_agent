@@ -16,6 +16,7 @@ use crate::{
     streaming::{AgentEventSink, AgentStreamEvent, StreamAccumulator},
     tool_provider::ToolProvider,
     tool_registry::ToolRegistry,
+    tool_result_processor::{ToolResultProcessor, ToolResultProcessorConfig},
     trace::{DEFAULT_SNAPSHOT_MAX_BYTES, JsonSnapshot, TraceEventType, TraceSink, trace_id},
 };
 
@@ -36,7 +37,11 @@ impl Agent {
         let messages = vec![ChatMessage::system(&config.system_prompt)];
         let context_usage = ContextUsage::for_model(&config.model);
 
-        let mut tool_registry = ToolRegistry::new();
+        let tool_result_processor = ToolResultProcessor::new(ToolResultProcessorConfig {
+            max_injected_chars: config.tool_results.max_injected_chars,
+            output_dir: config.tool_results.output_dir.clone(),
+        });
+        let mut tool_registry = ToolRegistry::with_result_processor(tool_result_processor);
 
         // Add local tools
         tool_registry.add_provider(Box::new(LocalToolProvider::new(&config.tavily_api_key)));
