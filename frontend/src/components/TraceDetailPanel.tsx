@@ -2,20 +2,23 @@ import { JsonBlock } from './JsonBlock'
 import type { TraceNode } from '../types/trace'
 
 interface TraceDetailPanelProps {
+  className?: string
   node: TraceNode | null
 }
 
-export function TraceDetailPanel({ node }: TraceDetailPanelProps) {
+export function TraceDetailPanel({ className = 'lg:sticky lg:top-6', node }: TraceDetailPanelProps) {
+  const panelClassName = `rounded-md border border-slate-300 bg-white p-5 ${className}`
+
   if (!node) {
     return (
-      <aside className="rounded-md border border-slate-300 bg-white p-5 text-sm text-slate-500">
+      <aside className={`${panelClassName} text-sm text-slate-500`}>
         选择一个节点查看详情
       </aside>
     )
   }
 
   return (
-    <aside className="rounded-md border border-slate-300 bg-white p-5 shadow-sm lg:sticky lg:top-6">
+    <aside className={`${panelClassName} shadow-sm`}>
       <div className="mb-5">
         <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">{node.status}</p>
         <h2 className="mt-1 text-xl font-semibold text-slate-950">{node.title}</h2>

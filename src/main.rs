@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sparrow_agent::{
     agent::Agent,
+    cli_observer::{inspect_addr_from_env_value, run_cli_with_browser_trace},
     config::AppConfig,
     console::{is_exit_command, read_user_input},
     server::run_server,
@@ -18,11 +19,23 @@ async fn run() -> Result<()> {
     sparrow_agent::debug::init();
     let config = AppConfig::load_or_initialize()?;
 
-    if std::env::args().any(|arg| arg == "--server") {
+    let args = std::env::args().collect::<Vec<_>>();
+
+    if args.iter().any(|arg| arg == "--server") {
         let addr = std::env::var("SPARROW_SERVER_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8787".into())
             .parse()?;
         return run_server(config, addr).await;
+    }
+
+    if args
+        .iter()
+        .any(|arg| arg == "--inspect" || arg == "--browser-trace")
+    {
+        let addr = inspect_addr_from_env_value(
+            std::env::var("SPARROW_INSPECT_ADDR").ok().as_deref(),
+        )?;
+        return run_cli_with_browser_trace(config, addr).await;
     }
 
     let mut agent = Agent::new(config).await?;

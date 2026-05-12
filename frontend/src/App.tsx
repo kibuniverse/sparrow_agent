@@ -4,6 +4,8 @@ import { createAgentTask } from './api/agentTrace'
 import { useTaskStream } from './hooks/useTaskStream'
 import { ChatPage, type ChatMessage } from './pages/ChatPage'
 import { TaskDetailPage } from './pages/TaskDetailPage'
+import { TraceArchivePage } from './pages/TraceArchivePage'
+import { TraceReplayPage } from './pages/TraceReplayPage'
 import { navigateTo, useRoute } from './router'
 import {
   applyTraceEvent,
@@ -11,7 +13,7 @@ import {
   createInitialTraceState,
   type TraceState,
 } from './state/traceReducer'
-import type { TaskSnapshot, TraceEvent } from './types/trace'
+import type { TaskSnapshot, TraceArchive, TraceEvent } from './types/trace'
 
 function App() {
   const route = useRoute()
@@ -43,9 +45,16 @@ function App() {
     setConversationId(snapshot.conversation_id)
   }, [])
 
+  const applyArchive = useCallback((archive: TraceArchive) => {
+    setTraceState(applyTraceSnapshot(createInitialTraceState(), archive.task))
+    setConversationId(archive.task.conversation_id)
+  }, [])
+
+  const activeTaskId = route.name === 'task' ? route.taskId : traceState.taskId
+
   useTaskStream({
-    taskId: traceState.taskId,
-    enabled: traceState.status === 'running' && Boolean(traceState.taskId),
+    taskId: activeTaskId,
+    enabled: traceState.status === 'running' && Boolean(activeTaskId),
     lastSeq: traceState.lastSeq,
     onEvent: handleTraceEvent,
   })
@@ -70,6 +79,23 @@ function App() {
     },
     [conversationId],
   )
+
+  if (route.name === 'trace-file') {
+    return (
+      <TraceArchivePage
+        fileName={route.fileName}
+        onApplyArchive={applyArchive}
+        onBack={() => navigateTo('/')}
+        onReplay={(fileName) => navigateTo(`/replay/${encodeURIComponent(fileName)}`)}
+        onSelectNode={selectNode}
+        state={traceState}
+      />
+    )
+  }
+
+  if (route.name === 'replay') {
+    return <TraceReplayPage fileName={route.fileName} onBack={() => navigateTo('/')} />
+  }
 
   if (route.name === 'task') {
     return (

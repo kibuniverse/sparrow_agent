@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import '@testing-library/jest-dom/vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { CreateAgentTaskResponse, TaskSnapshot, TraceEvent } from './types/trace'
@@ -34,6 +34,10 @@ class FakeEventSource {
   }
 
   onerror: ((event: Event) => void) | null = null
+
+  static lastUrl(): string | null {
+    return FakeEventSource.instances.at(-1)?.url ?? null
+  }
 }
 
 const snapshot = (value: unknown) => ({
@@ -130,6 +134,54 @@ const events: TraceEvent[] = [
   },
 ]
 
+const cliEvents: TraceEvent[] = [
+  {
+    seq: 1,
+    task_id: 'task_cli_1',
+    conversation_id: 'conv_cli_1',
+    timestamp: '2026-05-10T02:00:00.000Z',
+    type: 'task.started',
+    payload: { message: { role: 'user', content: 'hello from cli' } },
+  },
+  {
+    seq: 2,
+    task_id: 'task_cli_1',
+    conversation_id: 'conv_cli_1',
+    timestamp: '2026-05-10T02:00:01.000Z',
+    type: 'model_call.started',
+    payload: {
+      node_id: 'model_cli_1',
+      round: 1,
+      model: 'deepseek-chat',
+      request: snapshot({ messages: 2 }),
+    },
+  },
+]
+
+const archive = {
+  schema_version: 1 as const,
+  exported_at: '2026-05-10T02:00:02.000Z',
+  source: 'cli',
+  task: {
+    task_id: 'task_cli_1',
+    conversation_id: 'conv_cli_1',
+    status: 'succeeded' as const,
+    created_at: '2026-05-10T02:00:00.000Z',
+    updated_at: '2026-05-10T02:00:02.000Z',
+    events: [
+      ...cliEvents,
+      {
+        seq: 3,
+        task_id: 'task_cli_1',
+        conversation_id: 'conv_cli_1',
+        timestamp: '2026-05-10T02:00:02.000Z',
+        type: 'task.completed',
+        payload: { duration_ms: 2000, final_answer: 'cli done' },
+      },
+    ],
+  },
+}
+
 describe('App trace visualization', () => {
   beforeEach(() => {
     FakeEventSource.instances = []
@@ -139,6 +191,7 @@ describe('App trace visualization', () => {
   })
 
   afterEach(() => {
+    cleanup()
     vi.unstubAllGlobals()
   })
 
@@ -165,6 +218,35 @@ describe('App trace visualization', () => {
     expect(screen.getByRole('heading', { name: '工具调用 1：read_file' })).toBeInTheDocument()
     expect(screen.getByText(/"bytes": 120/)).toBeInTheDocument()
   })
+
+  it('streams a CLI-created task from a direct browser link', async () => {
+    window.history.replaceState(null, '', '/tasks/task_cli_1')
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: '任务详情' })).toBeInTheDocument()
+    await waitFor(() => expect(FakeEventSource.lastUrl()).toBe(
+      '/api/agent/tasks/task_cli_1/events?after_seq=2',
+    ))
+  })
+
+  it('opens a generated trace archive in preview mode', async () => {
+    window.history.replaceState(null, '', '/trace-files/task_cli_1.sparrow-trace.json')
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Trace 预览' })).toBeInTheDocument()
+    expect(screen.getByText('task_cli_1.sparrow-trace.json')).toBeInTheDocument()
+  })
+
+  it('opens a generated trace archive in replay mode', async () => {
+    window.history.replaceState(null, '', '/replay/task_cli_1.sparrow-trace.json')
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Trace 回放' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '播放' })).toBeInTheDocument()
+  })
 })
 
 async function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
@@ -190,6 +272,22 @@ async function mockFetch(input: string | URL | Request, init?: RequestInit): Pro
       events,
     }
     return jsonResponse(response, 200)
+  }
+
+  if (url === '/api/agent/tasks/task_cli_1') {
+    const response: TaskSnapshot = {
+      task_id: 'task_cli_1',
+      conversation_id: 'conv_cli_1',
+      status: 'running',
+      created_at: '2026-05-10T02:00:00.000Z',
+      updated_at: '2026-05-10T02:00:01.000Z',
+      events: cliEvents,
+    }
+    return jsonResponse(response, 200)
+  }
+
+  if (url === '/api/agent/trace-files/task_cli_1.sparrow-trace.json') {
+    return jsonResponse(archive, 200)
   }
 
   return jsonResponse({ error: { code: 'not_found', message: 'Not found', retryable: false } }, 404)

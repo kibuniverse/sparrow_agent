@@ -1,4 +1,4 @@
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{net::TcpListener, time::sleep};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
     config::AppConfig,
@@ -28,6 +29,7 @@ pub struct ServerState {
     pub config: AppConfig,
     pub conversations: Arc<ConversationStore>,
     pub traces: Arc<TraceStore>,
+    pub trace_dir: Option<Arc<PathBuf>>,
 }
 
 impl ServerState {
@@ -36,7 +38,13 @@ impl ServerState {
             config,
             conversations: Arc::new(ConversationStore::new()),
             traces,
+            trace_dir: None,
         }
+    }
+
+    pub fn with_trace_dir(mut self, trace_dir: PathBuf) -> Self {
+        self.trace_dir = Some(Arc::new(trace_dir));
+        self
     }
 }
 
@@ -62,12 +70,16 @@ pub struct EventStreamQuery {
     pub after_seq: u64,
 }
 
-pub fn build_router(state: ServerState) -> Router {
+fn api_routes() -> Router<ServerState> {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/agent/tasks", post(create_task))
         .route("/api/agent/tasks/{task_id}", get(get_task))
         .route("/api/agent/tasks/{task_id}/events", get(stream_task_events))
+}
+
+pub fn build_router(state: ServerState) -> Router {
+    api_routes()
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -75,6 +87,33 @@ pub fn build_router(state: ServerState) -> Router {
                 .allow_headers(Any),
         )
         .with_state(state)
+}
+
+pub fn build_browser_router(state: ServerState, frontend_dist: PathBuf) -> Router {
+    let trace_dir = crate::trace_file::default_trace_dir()
+        .unwrap_or_else(|_| PathBuf::from(".sparrow_agent/traces"));
+    build_browser_router_with_trace_dir(state, frontend_dist, trace_dir)
+}
+
+pub fn build_browser_router_with_trace_dir(
+    state: ServerState,
+    frontend_dist: PathBuf,
+    trace_dir: PathBuf,
+) -> Router {
+    let index = frontend_dist.join("index.html");
+    api_routes()
+        .route(
+            "/api/agent/trace-files/{file_name}",
+            get(open_trace_file),
+        )
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .with_state(state.with_trace_dir(trace_dir))
+        .fallback_service(ServeDir::new(frontend_dist).fallback(ServeFile::new(index)))
 }
 
 pub async fn run_server(config: AppConfig, addr: SocketAddr) -> Result<()> {
@@ -205,6 +244,28 @@ async fn get_task(
         .snapshot(&task_id)
         .map(Json)
         .map_err(|_| ApiError::not_found("task_not_found", "Task was not found."))
+}
+
+async fn open_trace_file(
+    State(state): State<ServerState>,
+    Path(file_name): Path<String>,
+) -> std::result::Result<Json<crate::trace_file::TraceArchive>, ApiError> {
+    let Some(trace_dir) = state.trace_dir.as_deref() else {
+        return Err(ApiError::not_found(
+            "trace_file_not_found",
+            "Trace file was not found.",
+        ));
+    };
+    let Some(path) = crate::trace_file::safe_archive_file_path(trace_dir, &file_name) else {
+        return Err(ApiError::bad_request(
+            "invalid_trace_file",
+            "Trace file name is invalid.",
+        ));
+    };
+
+    crate::trace_file::read_trace_archive(path)
+        .map(Json)
+        .map_err(|_| ApiError::not_found("trace_file_not_found", "Trace file was not found."))
 }
 
 async fn stream_task_events(
