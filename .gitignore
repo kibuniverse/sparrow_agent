@@ -36,3 +36,4 @@ pnpm-debug.log*
 
 # Sparrow runtime artifacts
 /.sparrow_agent/tool_outputs/
+/.sparrow_agent/traces/

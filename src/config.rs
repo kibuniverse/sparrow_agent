@@ -268,7 +268,7 @@ impl FilesystemConfig {
                 "read-write" => Some(FilesystemMode::ReadWrite),
                 _ => None,
             })
-            .unwrap_or(FilesystemMode::ReadOnly);
+            .unwrap_or(FilesystemMode::ReadWrite);
 
         let confirm = env::var("SPARROW_FILESYSTEM_CONFIRM")
             .ok()
@@ -329,6 +329,8 @@ impl McpServerConfig {
             .ok()
             .unwrap_or_else(|| "npx".into());
 
+        let path = env::current_dir();
+        let current_dir = path.unwrap().to_string_lossy().into_owned();
         let args = env::var("SPARROW_MCP_FILESYSTEM_ARGS")
             .ok()
             .and_then(|v| serde_json::from_str(&v).ok())
@@ -336,7 +338,7 @@ impl McpServerConfig {
                 vec![
                     "-y".into(),
                     "@modelcontextprotocol/server-filesystem".into(),
-                    "/Users/yankaizhi/RustProjects/sparrow_agent".into(),
+                    current_dir,
                 ]
             });
 
