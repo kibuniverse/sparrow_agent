@@ -14,6 +14,18 @@ fn json_snapshot_parses_redacts_and_truncates_text() {
 }
 
 #[test]
+fn json_snapshot_preserves_token_count_metrics() {
+    let snapshot = JsonSnapshot::from_text(
+        r#"{"reasoning_tokens":3,"total_tokens":15,"token":"secret"}"#,
+        128,
+    );
+
+    assert_eq!(snapshot.value["reasoning_tokens"], 3);
+    assert_eq!(snapshot.value["total_tokens"], 15);
+    assert_eq!(snapshot.value["token"], "[REDACTED]");
+}
+
+#[test]
 fn json_snapshot_wraps_non_json_text() {
     let snapshot = JsonSnapshot::from_text("plain tool output", 64);
 

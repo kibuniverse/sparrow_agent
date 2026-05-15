@@ -129,9 +129,14 @@ pub fn trace_id(prefix: &str) -> String {
 
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    ["api_key", "token", "authorization", "password", "secret"]
+    ["api_key", "authorization", "password", "secret"]
         .iter()
         .any(|needle| key.contains(needle))
+        || key == "token"
+        || key.ends_with("token")
+        || key.ends_with("_token")
+        || key.ends_with("-token")
+        || key.ends_with(".token")
 }
 
 fn truncate_to_utf8_boundary(text: &str, max_bytes: usize) -> (String, bool) {
