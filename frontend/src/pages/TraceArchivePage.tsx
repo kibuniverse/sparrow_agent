@@ -86,7 +86,7 @@ export function TraceArchivePage({
         {error ? <div className="rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <TraceTimeline onSelectNode={onSelectNode} state={state} />
-          <TraceDetailPanel node={selectedNode} />
+          <TraceDetailPanel className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto" node={selectedNode} />
         </div>
       </div>
     </main>
