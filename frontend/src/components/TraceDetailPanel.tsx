@@ -1,4 +1,9 @@
 import { JsonBlock } from './JsonBlock'
+import {
+  ModelMessageList,
+  requestMessagesFromSnapshot,
+  responseMessageFromSnapshot,
+} from './ModelMessageList'
 import type { TraceNode } from '../types/trace'
 
 interface TraceDetailPanelProps {
@@ -52,11 +57,25 @@ function renderDetail(node: TraceNode) {
           </p>
         </section>
         <section>
-          <h3 className="mb-2 text-sm font-medium text-slate-950">请求</h3>
+          <h3 className="mb-2 text-sm font-medium text-slate-950">输入 messages</h3>
+          <ModelMessageList
+            messages={requestMessagesFromSnapshot(node.detail.request)}
+            emptyLabel="该 trace 未包含详细 messages"
+          />
+        </section>
+        <section>
+          <h3 className="mb-2 text-sm font-medium text-slate-950">模型输出</h3>
+          <ModelMessageList
+            messages={responseMessageFromSnapshot(node.detail.response)}
+            emptyLabel={node.status === 'running' ? '运行中' : '暂无输出'}
+          />
+        </section>
+        <section>
+          <h3 className="mb-2 text-sm font-medium text-slate-950">请求 JSON</h3>
           <JsonBlock snapshot={node.detail.request} />
         </section>
         <section>
-          <h3 className="mb-2 text-sm font-medium text-slate-950">响应</h3>
+          <h3 className="mb-2 text-sm font-medium text-slate-950">响应 JSON</h3>
           <JsonBlock snapshot={node.detail.response} />
         </section>
       </>
