@@ -1,9 +1,6 @@
 import { JsonBlock } from './JsonBlock'
-import {
-  ModelMessageList,
-  requestMessagesFromSnapshot,
-  responseMessageFromSnapshot,
-} from './ModelMessageList'
+import { ModelMessageList } from './ModelMessageList'
+import { requestMessagesFromSnapshot, responseMessageFromSnapshot } from './modelMessageSnapshots'
 import type { TraceNode } from '../types/trace'
 
 interface TraceDetailPanelProps {

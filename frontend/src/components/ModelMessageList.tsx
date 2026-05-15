@@ -1,9 +1,4 @@
-import type {
-  JsonSnapshot,
-  ModelMessageSnapshot,
-  ModelRequestSnapshotValue,
-  ModelResponseSnapshotValue,
-} from '../types/trace'
+import type { JsonSnapshot, ModelMessageSnapshot } from '../types/trace'
 import { JsonBlock } from './JsonBlock'
 
 interface ModelMessageListProps {
@@ -57,16 +52,6 @@ export function ModelMessageList({ messages, emptyLabel }: ModelMessageListProps
       ))}
     </ol>
   )
-}
-
-export function requestMessagesFromSnapshot(snapshot: JsonSnapshot | null): ModelMessageSnapshot[] {
-  const value = snapshot?.value as ModelRequestSnapshotValue | null | undefined
-  return Array.isArray(value?.messages) ? value.messages : []
-}
-
-export function responseMessageFromSnapshot(snapshot: JsonSnapshot | null): ModelMessageSnapshot[] {
-  const value = snapshot?.value as ModelResponseSnapshotValue | null | undefined
-  return value?.message ? [value.message] : []
 }
 
 function textJsonSnapshot(text: string): JsonSnapshot {
