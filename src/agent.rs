@@ -254,7 +254,7 @@ impl Agent {
                     "node_id": model_call_id,
                     "round": round + 1,
                     "model": request.model,
-                    "request": self.model_request_snapshot(&request),
+                    "request": model_request_snapshot(&request),
                 }),
             );
 
@@ -283,21 +283,10 @@ impl Agent {
                     "duration_ms": started.elapsed().as_millis() as u64,
                     "finish_reason": completed.finish_reason,
                     "usage": completed.usage.as_ref().map(trace_usage),
-                    "response": JsonSnapshot::from_value(
-                        json!({
-                            "has_content": completed
-                                .message
-                                .content
-                                .as_deref()
-                                .is_some_and(|content| !content.is_empty()),
-                            "tool_call_count": completed
-                                .message
-                                .tool_calls
-                                .as_ref()
-                                .map(|tool_calls| tool_calls.len())
-                                .unwrap_or(0),
-                        }),
-                        DEFAULT_SNAPSHOT_MAX_BYTES,
+                    "response": model_response_snapshot(
+                        &completed.message,
+                        completed.finish_reason.as_deref(),
+                        completed.usage.as_ref(),
                     ),
                 }),
             );
@@ -346,19 +335,6 @@ impl Agent {
             stream: None,
             stream_options: None,
         }
-    }
-
-    fn model_request_snapshot(&self, request: &ChatCompletionRequest) -> JsonSnapshot {
-        JsonSnapshot::from_value(
-            json!({
-                "model": request.model,
-                "message_count": request.messages.len(),
-                "tool_count": request.tools.as_ref().map(|tools| tools.len()).unwrap_or(0),
-                "thinking": request.thinking,
-                "reasoning_effort": request.reasoning_effort,
-            }),
-            DEFAULT_SNAPSHOT_MAX_BYTES,
-        )
     }
 
     async fn handle_assistant_message(&mut self, message: &ChoiceMessage) -> TurnStatus {
@@ -678,6 +654,49 @@ fn trace_usage(usage: &Usage) -> Value {
     })
 }
 
+fn model_request_snapshot(request: &ChatCompletionRequest) -> JsonSnapshot {
+    JsonSnapshot::from_value(
+        json!({
+            "model": request.model,
+            "message_count": request.messages.len(),
+            "messages": request.messages,
+            "tool_count": request.tools.as_ref().map(|tools| tools.len()).unwrap_or(0),
+            "thinking": request.thinking,
+            "reasoning_effort": request.reasoning_effort,
+        }),
+        DEFAULT_SNAPSHOT_MAX_BYTES,
+    )
+}
+
+fn model_response_snapshot(
+    message: &ChoiceMessage,
+    finish_reason: Option<&str>,
+    usage: Option<&Usage>,
+) -> JsonSnapshot {
+    JsonSnapshot::from_value(
+        json!({
+            "message": {
+                "role": message.role,
+                "content": message.content,
+                "reasoning_content": message.reasoning_content,
+                "tool_calls": message.tool_calls,
+            },
+            "finish_reason": finish_reason,
+            "usage": usage.map(trace_usage),
+            "has_content": message
+                .content
+                .as_deref()
+                .is_some_and(|content| !content.is_empty()),
+            "tool_call_count": message
+                .tool_calls
+                .as_ref()
+                .map(|tool_calls| tool_calls.len())
+                .unwrap_or(0),
+        }),
+        DEFAULT_SNAPSHOT_MAX_BYTES,
+    )
+}
+
 fn model_context_window_tokens(model: &str) -> Option<u32> {
     match model {
         "deepseek-v4-flash" | "deepseek-v4-pro" => Some(DEEPSEEK_V4_CONTEXT_TOKENS),
@@ -769,13 +788,18 @@ fn format_token_count(value: u32) -> String {
 mod tests {
     use super::{
         ContextUsage, ContextUsageColor, StreamingTraceForwarder, format_token_count,
-        model_context_window_tokens, render_progress_bar,
+        model_context_window_tokens, model_request_snapshot, model_response_snapshot,
+        render_progress_bar,
     };
     use crate::{
+        api::{
+            ChatCompletionRequest, ChatMessage, ChoiceMessage, CompletionTokensDetails,
+            FunctionCall, PromptTokensDetails, ThinkingConfig, ToolCall, Usage,
+        },
         streaming::{AgentEventSink, AgentStreamEvent},
         trace::{TraceEventType, TraceSink},
     };
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use std::sync::Mutex;
 
     #[test]
@@ -797,6 +821,75 @@ mod tests {
             Some(1_000_000)
         );
         assert_eq!(model_context_window_tokens("custom-model"), None);
+    }
+
+    #[test]
+    fn model_request_snapshot_includes_full_messages() {
+        let request = ChatCompletionRequest {
+            model: "deepseek-v4-pro".into(),
+            messages: vec![
+                ChatMessage::system("system prompt"),
+                ChatMessage::user("user question"),
+                ChatMessage::tool(r#"{"result":"ok"}"#, "call_1"),
+            ],
+            tools: None,
+            thinking: Some(ThinkingConfig::enabled()),
+            reasoning_effort: Some("high".into()),
+            stream: None,
+            stream_options: None,
+        };
+
+        let snapshot = model_request_snapshot(&request);
+
+        assert_eq!(snapshot.value["model"], "deepseek-v4-pro");
+        assert_eq!(snapshot.value["message_count"], 3);
+        assert_eq!(snapshot.value["messages"][0]["role"], "system");
+        assert_eq!(snapshot.value["messages"][1]["content"], "user question");
+        assert_eq!(snapshot.value["messages"][2]["tool_call_id"], "call_1");
+        assert_eq!(snapshot.value["thinking"], json!({ "type": "enabled" }));
+    }
+
+    #[test]
+    fn model_response_snapshot_includes_assistant_message_output() {
+        let message = ChoiceMessage {
+            role: "assistant".into(),
+            content: Some(String::new()),
+            reasoning_content: Some("Need to inspect files.".into()),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"Cargo.toml"}"#.into(),
+                },
+            }]),
+        };
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            prompt_tokens_details: PromptTokensDetails { cached_tokens: 0 },
+            completion_tokens_details: CompletionTokensDetails {
+                reasoning_tokens: 3,
+            },
+            prompt_cache_hit_tokens: 0,
+            prompt_cache_miss_tokens: 10,
+        };
+
+        let snapshot = model_response_snapshot(&message, Some("tool_calls"), Some(&usage));
+
+        assert_eq!(snapshot.value["message"]["role"], "assistant");
+        assert_eq!(
+            snapshot.value["message"]["reasoning_content"],
+            "Need to inspect files."
+        );
+        assert_eq!(
+            snapshot.value["message"]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
+        assert_eq!(snapshot.value["finish_reason"], "tool_calls");
+        assert_eq!(snapshot.value["usage"]["reasoning_tokens"], 3);
+        assert_eq!(snapshot.value["tool_call_count"], 1);
     }
 
     #[test]

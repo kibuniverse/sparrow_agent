@@ -30,7 +30,14 @@ describe('traceReducer', () => {
           node_id: 'model_1',
           round: 1,
           model: 'deepseek-chat',
-          request: jsonSnapshot({ messages: 1 }),
+          request: jsonSnapshot({
+            model: 'deepseek-chat',
+            message_count: 2,
+            messages: [
+              { role: 'system', content: 'system prompt' },
+              { role: 'user', content: 'Inspect repo' },
+            ],
+          }),
         },
       },
       {
@@ -45,6 +52,38 @@ describe('traceReducer', () => {
         seq: 4,
         task_id: 'task_1',
         conversation_id: 'conv_1',
+        timestamp: '2026-05-10T01:00:02.500Z',
+        type: 'model_call.completed',
+        payload: {
+          node_id: 'model_1',
+          duration_ms: 500,
+          finish_reason: 'tool_calls',
+          usage: null,
+          response: jsonSnapshot({
+            message: {
+              role: 'assistant',
+              content: '',
+              reasoning_content: 'Need repository map.',
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: {
+                    name: 'read_file',
+                    arguments: '{"path":"Cargo.toml"}',
+                  },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+            tool_call_count: 1,
+          }),
+        },
+      },
+      {
+        seq: 5,
+        task_id: 'task_1',
+        conversation_id: 'conv_1',
         timestamp: '2026-05-10T01:00:03.000Z',
         type: 'model_output.started',
         payload: {
@@ -54,7 +93,7 @@ describe('traceReducer', () => {
         },
       },
       {
-        seq: 5,
+        seq: 6,
         task_id: 'task_1',
         conversation_id: 'conv_1',
         timestamp: '2026-05-10T01:00:04.000Z',
@@ -71,7 +110,7 @@ describe('traceReducer', () => {
         },
       },
       {
-        seq: 6,
+        seq: 7,
         task_id: 'task_1',
         conversation_id: 'conv_1',
         timestamp: '2026-05-10T01:00:05.000Z',
@@ -86,7 +125,7 @@ describe('traceReducer', () => {
         },
       },
       {
-        seq: 7,
+        seq: 8,
         task_id: 'task_1',
         conversation_id: 'conv_1',
         timestamp: '2026-05-10T01:00:06.000Z',
@@ -104,11 +143,30 @@ describe('traceReducer', () => {
     }
 
     expect(state.status).toBe('running')
-    expect(state.lastSeq).toBe(7)
+    expect(state.lastSeq).toBe(8)
     expect(state.rootNodeIds).toEqual(['model_1'])
     expect(state.nodesById.model_1.childrenIds).toEqual(['output_1'])
     expect(state.nodesById.output_1.childrenIds).toEqual(['tool_1'])
     expect(state.nodesById.model_1.detail.type).toBe('model_call')
+    expect(state.nodesById.model_1.detail).toMatchObject({
+      type: 'model_call',
+      request: {
+        value: {
+          messages: [
+            { role: 'system', content: 'system prompt' },
+            { role: 'user', content: 'Inspect repo' },
+          ],
+        },
+      },
+      response: {
+        value: {
+          message: {
+            role: 'assistant',
+            tool_calls: [{ function: { name: 'read_file' } }],
+          },
+        },
+      },
+    })
     expect(state.latestReasoningText).toBe('Need repository map.')
     expect(state.nodesById.output_1.detail).toMatchObject({
       type: 'model_output',

@@ -76,6 +76,40 @@ export interface JsonSnapshot {
   truncated: boolean
 }
 
+export interface ModelToolCallSnapshot {
+  id?: string | null
+  type?: string | null
+  function?: {
+    name?: string | null
+    arguments?: string | null
+  } | null
+}
+
+export interface ModelMessageSnapshot {
+  role: string
+  content?: string | null
+  reasoning_content?: string | null
+  tool_calls?: ModelToolCallSnapshot[] | null
+  tool_call_id?: string | null
+}
+
+export interface ModelRequestSnapshotValue {
+  model?: string
+  message_count?: number
+  messages?: ModelMessageSnapshot[]
+  tool_count?: number
+  thinking?: unknown
+  reasoning_effort?: string | null
+}
+
+export interface ModelResponseSnapshotValue {
+  message?: ModelMessageSnapshot | null
+  finish_reason?: string | null
+  usage?: TokenUsage | null
+  has_content?: boolean
+  tool_call_count?: number
+}
+
 export interface TokenUsage {
   prompt_tokens: number
   completion_tokens: number
