@@ -1,9 +1,4 @@
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
-    time::Instant,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 
@@ -102,7 +97,9 @@ pub async fn run_cli_with_browser_trace(config: AppConfig, addr: SocketAddr) -> 
                     println!("trace> {}", path.display());
                     println!("replay> {}", replay_trace_url(local_addr, &file_name));
                 }
-                Err(write_error) => eprintln!("Warning: failed to write trace archive: {write_error}"),
+                Err(write_error) => {
+                    eprintln!("Warning: failed to write trace archive: {write_error}")
+                }
             }
             return Err(error);
         }

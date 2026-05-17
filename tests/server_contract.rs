@@ -7,8 +7,8 @@ use axum::{
 use serde_json::json;
 use sparrow_agent::{
     config::{
-        AppConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode, StreamingConfig,
-        ToolResultConfig,
+        AppConfig, BashConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode,
+        StreamingConfig, ToolResultConfig,
     },
     server::{ServerState, build_router},
     trace::TraceEventType,
@@ -112,12 +112,7 @@ async fn browser_router_serves_frontend_index() {
     );
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -240,6 +235,16 @@ fn test_config() -> AppConfig {
             enabled: true,
             show_reasoning: true,
             show_tool_call_deltas: false,
+        },
+        bash: BashConfig {
+            enabled: false,
+            roots: vec![".".into()],
+            require_confirmation: false,
+            timeout_ms: 30_000,
+            max_timeout_ms: 120_000,
+            max_command_chars: 8_192,
+            stream_max_bytes: 8 * 1024,
+            env_allowlist: vec!["PATH".into()],
         },
     }
 }

@@ -1,5 +1,7 @@
+use std::fs;
+
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{Value, json};
 use sparrow_agent::{
     trace::{TaskStatus, TraceEventType},
     trace_file::{
@@ -68,7 +70,14 @@ fn write_and_read_trace_archive_round_trip_snapshot() {
     let written = write_trace_archive(&store, &task.task_id, dir.path()).unwrap();
     let archive = read_trace_archive(&written).unwrap();
 
-    assert_eq!(archive.schema_version, 1);
+    let raw = fs::read_to_string(&written).unwrap();
+    let raw_json: Value = serde_json::from_str(&raw).unwrap();
+
+    assert_eq!(raw_json["schema_version"], 2);
+    assert_eq!(raw_json["compression"]["original_event_count"], 2);
+    assert_eq!(raw_json["compression"]["compact_event_count"], 2);
+    assert_eq!(raw.lines().count(), 1);
+    assert_eq!(archive.schema_version, 2);
     assert_eq!(archive.source, "cli");
     assert_eq!(archive.task.task_id, task.task_id);
     assert_eq!(archive.task.status, TaskStatus::Succeeded);
@@ -91,4 +100,24 @@ fn trace_archive_serializes_with_snapshot_key() {
     assert!(text.contains(r#""schema_version":1"#));
     assert!(text.contains(r#""source":"cli""#));
     assert!(text.contains(r#""task":"#));
+}
+
+#[test]
+fn read_trace_archive_supports_legacy_v1_archive() {
+    let store = TraceStore::new();
+    let task = store.create_task("conv_1".into(), "msg_1".into());
+    let archive = TraceArchive {
+        schema_version: 1,
+        exported_at: Utc::now(),
+        source: "cli".into(),
+        task: store.snapshot(&task.task_id).unwrap(),
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sparrow-trace.json");
+    fs::write(&path, serde_json::to_string(&archive).unwrap()).unwrap();
+
+    let read = read_trace_archive(&path).unwrap();
+
+    assert_eq!(read.schema_version, 1);
+    assert_eq!(read.task.task_id, task.task_id);
 }

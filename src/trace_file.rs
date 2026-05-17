@@ -6,10 +6,15 @@ use std::{
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::trace_compaction::{
+    TRACE_ARCHIVE_V2_SCHEMA_VERSION, TraceArchiveV2, compact_archive, expand_archive_v2,
+};
 use crate::trace_store::{TaskSnapshot, TraceStore};
 
-pub const TRACE_ARCHIVE_SCHEMA_VERSION: u32 = 1;
+pub const TRACE_ARCHIVE_SCHEMA_VERSION: u32 = TRACE_ARCHIVE_V2_SCHEMA_VERSION;
+pub const TRACE_ARCHIVE_V1_SCHEMA_VERSION: u32 = 1;
 pub const TRACE_ARCHIVE_EXTENSION: &str = ".sparrow-trace.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,7 +45,11 @@ pub fn archive_file_name(task_id: &str) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '-')
         .collect::<String>();
-    let task_id = if sanitized.is_empty() { "trace" } else { sanitized.as_str() };
+    let task_id = if sanitized.is_empty() {
+        "trace"
+    } else {
+        sanitized.as_str()
+    };
     format!("{task_id}{TRACE_ARCHIVE_EXTENSION}")
 }
 
@@ -61,16 +70,17 @@ pub fn write_trace_archive(
 ) -> Result<PathBuf> {
     let snapshot = store.snapshot(task_id)?;
     let archive = TraceArchive {
-        schema_version: TRACE_ARCHIVE_SCHEMA_VERSION,
+        schema_version: TRACE_ARCHIVE_V1_SCHEMA_VERSION,
         exported_at: Utc::now(),
         source: "cli".into(),
         task: snapshot,
     };
+    let archive = compact_archive(archive)?;
     let trace_dir = trace_dir.as_ref();
     fs::create_dir_all(trace_dir)
         .with_context(|| format!("failed to create trace directory {}", trace_dir.display()))?;
     let path = trace_dir.join(archive_file_name(task_id));
-    let contents = serde_json::to_string_pretty(&archive).context("failed to serialize trace")?;
+    let contents = serde_json::to_string(&archive).context("failed to serialize trace")?;
     fs::write(&path, contents)
         .with_context(|| format!("failed to write trace archive {}", path.display()))?;
     Ok(path)
@@ -80,13 +90,23 @@ pub fn read_trace_archive(path: impl AsRef<Path>) -> Result<TraceArchive> {
     let path = path.as_ref();
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read trace archive {}", path.display()))?;
-    let archive: TraceArchive =
-        serde_json::from_str(&contents).context("failed to parse trace archive")?;
-    if archive.schema_version != TRACE_ARCHIVE_SCHEMA_VERSION {
-        bail!(
-            "unsupported trace archive schema version {}",
-            archive.schema_version
-        );
+    let value: Value = serde_json::from_str(&contents).context("failed to parse trace archive")?;
+    let schema_version = value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .context("trace archive missing schema_version")? as u32;
+
+    match schema_version {
+        TRACE_ARCHIVE_V1_SCHEMA_VERSION => {
+            serde_json::from_value(value).context("failed to parse v1 trace archive")
+        }
+        TRACE_ARCHIVE_V2_SCHEMA_VERSION => {
+            let archive: TraceArchiveV2 =
+                serde_json::from_value(value).context("failed to parse v2 trace archive")?;
+            expand_archive_v2(archive)
+        }
+        other => {
+            bail!("unsupported trace archive schema version {other}");
+        }
     }
-    Ok(archive)
 }
