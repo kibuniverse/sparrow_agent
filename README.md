@@ -1,6 +1,6 @@
 # Sparrow Agent
 
-Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行，以及基于 MCP filesystem server 的受控文件系统工具。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
+Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行、可显式启用的 Bash 命令工具，以及基于 MCP filesystem server 的受控文件系统工具。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
 
 ## 功能特性
 
@@ -11,6 +11,7 @@ Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSee
 - **可插拔工具提供者**：本地工具和 MCP 工具统一实现 `ToolProvider`，由 `ToolRegistry` 汇总定义并分发调用。
 - **Web 搜索**：内置 `webSearch`，通过 Tavily API 返回答案、摘要和来源链接。
 - **Rust WASM 沙盒执行**：内置 `runRustWasm`，将模型生成的 Rust 代码编译到 `wasm32-unknown-unknown` 并用 wasmtime 隔离执行。
+- **Bash 命令工具**：内置 `runBashCommand`，默认关闭；仅 CLI Agent 可用，启用后每次执行前要求用户确认，并限制 cwd、超时、输出和环境变量。
 - **MCP 文件系统工具**：默认尝试通过 `npx @modelcontextprotocol/server-filesystem` 接入文件系统工具，支持 roots、只读/读写模式、写入确认和敏感路径 denylist。
 - **Agent 调用可视化**：HTTP API + SSE 会推送 task、model call、model output、tool call 等结构化事件，前端可实时展示调用树和详情。
 - **安全配置管理**：API 密钥可交互式初始化并保存到本地配置文件，也可由环境变量覆盖。
@@ -171,6 +172,12 @@ pnpm dev
 | `SPARROW_STREAMING_ENABLED` | 是否启用模型流式调用 | `true` |
 | `SPARROW_SHOW_REASONING` | CLI 是否展示 reasoning | `true` |
 | `SPARROW_SHOW_TOOL_CALL_DELTAS` | CLI 是否展示工具调用参数增量 | `false` |
+| `SPARROW_BASH_ENABLED` | 是否启用 CLI Bash 命令工具 `runBashCommand` | `false` |
+| `SPARROW_BASH_ROOTS` | Bash 工具允许使用的 cwd 根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
+| `SPARROW_BASH_TIMEOUT_MS` | Bash 工具默认超时毫秒数，上限固定为 `120000` | `30000` |
+| `SPARROW_BASH_MAX_COMMAND_CHARS` | Bash 工具单条命令最大字符数 | `8192` |
+| `SPARROW_BASH_STREAM_MAX_BYTES` | Bash 工具 stdout/stderr 各自注入前保留的最大字节数 | `8192` |
+| `SPARROW_BASH_ENV_ALLOWLIST` | Bash 工具传入子进程的环境变量 allowlist，逗号分隔；名称包含 key/token/secret/password/authorization 的变量仍会被过滤 | `PATH,HOME,USER,TERM,TMPDIR` |
 | `SPARROW_FILESYSTEM_ENABLED` | 是否启用 MCP 文件系统工具 | `true` |
 | `SPARROW_FILESYSTEM_ROOTS` | 允许访问的根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
 | `SPARROW_FILESYSTEM_MODE` | 文件系统模式：`read-only` 或 `read-write` | `read-only` |
@@ -223,9 +230,9 @@ CLI / React Frontend
                   /            \
                  v              v
         LocalToolProvider   McpToolProvider
-          |        |             |
-          v        v             v
-     webSearch  runRustWasm  MCP filesystem tools
+          |        |       |      |
+          v        v       v      v
+     webSearch  runRustWasm runBashCommand MCP filesystem tools
 ```
 
 核心流程：
@@ -258,6 +265,7 @@ CLI / React Frontend
 |--------|----------|------|
 | `webSearch` | local | 使用 Tavily 搜索网页，最多返回 5 条结果和 Tavily answer |
 | `runRustWasm` | local | 编译并执行定义了 `pub fn run() -> String` 的 Rust 代码 |
+| `runBashCommand` | local | 显式启用后在 CLI 中执行单条非交互 Bash 命令，返回结构化 stdout/stderr/exit code/timeout 信息 |
 | `mcp__filesystem__*` | MCP | 来自 `@modelcontextprotocol/server-filesystem` 的文件系统工具，具体列表由 MCP server 动态发现 |
 
 `src/tools.rs` 中仍保留了演示用 `get_weather` 函数，但当前 `LocalToolProvider` 没有注册 `getWeather` 工具。
@@ -280,6 +288,28 @@ pub fn run() -> String {
 - **输出限制**：结果最大 64 KiB。
 - **错误限制**：编译 stderr 最多保留 16 KiB。
 - **内存边界检查**：通过导出的 `result_ptr` / `result_len` 从 WASM memory 读取结果。
+
+## Bash 命令工具安全边界
+
+`runBashCommand` 默认关闭，需要显式启用：
+
+```bash
+SPARROW_BASH_ENABLED=true cargo run
+```
+
+该工具只在 CLI Agent 中暴露。Server 模式和浏览器观察模式中的 HTTP API 会移除交互式工具；在 `--inspect` 模式下，终端里的 CLI Agent 可以使用 Bash 工具，但旁路的浏览器 API 不会暴露它。
+
+安全措施：
+
+- 每次命令执行前都会在终端展示 cwd、timeout 和完整 command，并要求用户输入 `y` 或 `yes` 确认；
+- 每次调用都是独立进程，不保留上一条命令的 cwd、环境或 shell 状态；
+- 命令通过非交互 Bash 运行，不读取用户 profile 或 rc 文件；
+- cwd 必须存在且位于 `SPARROW_BASH_ROOTS` 内；
+- 默认超时 30 秒，模型传入的 `timeout_ms` 会被限制在 120 秒以内；
+- stdout 和 stderr 分别按 `SPARROW_BASH_STREAM_MAX_BYTES` 截断，截断时不会切断 UTF-8 字符；
+- 子进程默认清空环境，仅传入 allowlist 中的变量，且变量名包含 key、token、secret、password、authorization 的项总会被过滤。
+
+注意：这是一个受控的本地命令执行工具，不是强 OS 沙盒。cwd root 校验用于约束工作目录，不能阻止命令显式访问系统上的其他绝对路径；因此默认关闭，并且每次执行都需要用户确认。
 
 ## MCP 文件系统安全边界
 
@@ -307,10 +337,11 @@ SPARROW_FILESYSTEM_MODE=read-write cargo run
 | `src/agent.rs` | Agent 编排器，维护消息历史、模型请求、工具循环、trace 转发 |
 | `src/client.rs` | DeepSeek HTTP/SSE 客户端 |
 | `src/api.rs` | DeepSeek Chat Completion 请求、响应和工具调用数据结构 |
+| `src/bash_runner.rs` | Bash 命令执行、cwd 校验、确认、超时、输出截断和环境变量过滤 |
 | `src/streaming.rs` | 流式响应累积器和 Agent stream event 抽象 |
 | `src/tool_provider.rs` | 工具 provider trait |
 | `src/tool_registry.rs` | 工具定义汇总、调用分发、并行执行和 traced execution |
-| `src/local_tools.rs` | 本地工具 provider，注册 `webSearch` 和 `runRustWasm` |
+| `src/local_tools.rs` | 本地工具 provider，注册 `webSearch`、`runRustWasm` 和可选 `runBashCommand` |
 | `src/tools.rs` | Tavily 搜索和 WASM 工具入口 |
 | `src/rust_wasm_runner.rs` | Rust 到 WASM 的编译与 wasmtime 沙盒运行 |
 | `src/mcp/` | MCP stdio transport、JSON-RPC protocol、client 和 filesystem provider |

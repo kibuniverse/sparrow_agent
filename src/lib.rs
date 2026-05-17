@@ -1,5 +1,7 @@
 pub mod agent;
 pub mod api;
+pub mod bash_runner;
+pub mod cli_observer;
 pub mod client;
 pub mod config;
 pub mod console;
@@ -15,6 +17,6 @@ pub mod tool_registry;
 pub mod tool_result_processor;
 pub mod tools;
 pub mod trace;
-pub mod trace_store;
+pub mod trace_compaction;
 pub mod trace_file;
-pub mod cli_observer;
+pub mod trace_store;

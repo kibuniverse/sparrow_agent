@@ -32,9 +32,8 @@ async fn run() -> Result<()> {
         .iter()
         .any(|arg| arg == "--inspect" || arg == "--browser-trace")
     {
-        let addr = inspect_addr_from_env_value(
-            std::env::var("SPARROW_INSPECT_ADDR").ok().as_deref(),
-        )?;
+        let addr =
+            inspect_addr_from_env_value(std::env::var("SPARROW_INSPECT_ADDR").ok().as_deref())?;
         return run_cli_with_browser_trace(config, addr).await;
     }
 

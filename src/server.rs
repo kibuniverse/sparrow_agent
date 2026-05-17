@@ -35,7 +35,7 @@ pub struct ServerState {
 impl ServerState {
     pub fn new(config: AppConfig, traces: Arc<TraceStore>) -> Self {
         Self {
-            config,
+            config: config.without_interactive_tools(),
             conversations: Arc::new(ConversationStore::new()),
             traces,
             trace_dir: None,
@@ -102,10 +102,7 @@ pub fn build_browser_router_with_trace_dir(
 ) -> Router {
     let index = frontend_dist.join("index.html");
     api_routes()
-        .route(
-            "/api/agent/trace-files/{file_name}",
-            get(open_trace_file),
-        )
+        .route("/api/agent/trace-files/{file_name}", get(open_trace_file))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

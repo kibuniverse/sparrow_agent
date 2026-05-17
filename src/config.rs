@@ -19,6 +19,10 @@ const CONFIG_FILE_NAME: &str = "config.json";
 const DEFAULT_MAX_READ_BYTES: u64 = 262_144;
 const DEFAULT_MAX_WRITE_BYTES: u64 = 262_144;
 const DEFAULT_TOOL_OUTPUT_DIR: &str = ".sparrow_agent/tool_outputs";
+const DEFAULT_BASH_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_BASH_MAX_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_BASH_MAX_COMMAND_CHARS: usize = 8_192;
+const DEFAULT_BASH_STREAM_MAX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -32,6 +36,7 @@ pub struct AppConfig {
     pub mcp_servers: Vec<McpServerConfig>,
     pub tool_results: ToolResultConfig,
     pub streaming: StreamingConfig,
+    pub bash: BashConfig,
 }
 
 impl AppConfig {
@@ -89,6 +94,7 @@ impl AppConfig {
             mcp_servers: vec![McpServerConfig::default_filesystem()],
             tool_results: ToolResultConfig::from_env(),
             streaming: StreamingConfig::from_env(),
+            bash: BashConfig::from_env(),
         })
     }
 
@@ -109,7 +115,13 @@ impl AppConfig {
             mcp_servers: vec![McpServerConfig::default_filesystem()],
             tool_results: ToolResultConfig::from_env(),
             streaming: StreamingConfig::from_env(),
+            bash: BashConfig::from_env(),
         })
+    }
+
+    pub fn without_interactive_tools(mut self) -> Self {
+        self.bash.enabled = false;
+        self
     }
 }
 
@@ -313,6 +325,85 @@ impl ConfirmationPolicy {
             Self::Always => true,
         }
     }
+}
+
+// ── Bash config ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct BashConfig {
+    pub enabled: bool,
+    pub roots: Vec<PathBuf>,
+    pub require_confirmation: bool,
+    pub timeout_ms: u64,
+    pub max_timeout_ms: u64,
+    pub max_command_chars: usize,
+    pub stream_max_bytes: usize,
+    pub env_allowlist: Vec<String>,
+}
+
+impl BashConfig {
+    pub fn from_env() -> Self {
+        let enabled = env::var("SPARROW_BASH_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false);
+
+        let roots = read_env_value("SPARROW_BASH_ROOTS")
+            .map(|value| split_paths(&value))
+            .filter(|roots| !roots.is_empty())
+            .unwrap_or_else(|| vec![PathBuf::from(".")]);
+
+        let timeout_ms = read_env_value("SPARROW_BASH_TIMEOUT_MS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .map(|value| value.min(DEFAULT_BASH_MAX_TIMEOUT_MS))
+            .unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
+
+        let max_command_chars = read_env_value("SPARROW_BASH_MAX_COMMAND_CHARS")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BASH_MAX_COMMAND_CHARS);
+
+        let stream_max_bytes = read_env_value("SPARROW_BASH_STREAM_MAX_BYTES")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BASH_STREAM_MAX_BYTES);
+
+        let env_allowlist = read_env_value("SPARROW_BASH_ENV_ALLOWLIST")
+            .map(|value| split_csv(&value))
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(default_bash_env_allowlist);
+
+        Self {
+            enabled,
+            roots,
+            require_confirmation: true,
+            timeout_ms,
+            max_timeout_ms: DEFAULT_BASH_MAX_TIMEOUT_MS,
+            max_command_chars,
+            stream_max_bytes,
+            env_allowlist,
+        }
+    }
+}
+
+fn split_paths(value: &str) -> Vec<PathBuf> {
+    value
+        .split(if cfg!(windows) { ';' } else { ':' })
+        .filter_map(clean_value)
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value.split(',').filter_map(clean_value).collect()
+}
+
+fn default_bash_env_allowlist() -> Vec<String> {
+    ["PATH", "HOME", "USER", "TERM", "TMPDIR"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[derive(Debug, Clone)]

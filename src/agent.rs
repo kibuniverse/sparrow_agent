@@ -44,7 +44,28 @@ impl Agent {
         let mut tool_registry = ToolRegistry::with_result_processor(tool_result_processor);
 
         // Add local tools
-        tool_registry.add_provider(Box::new(LocalToolProvider::new(&config.tavily_api_key)));
+        if config.bash.enabled {
+            println!("Bash command tool enabled.");
+            println!("Roots:");
+            for root in &config.bash.roots {
+                let display = root.canonicalize().unwrap_or_else(|_| root.clone());
+                println!("  - {}", display.display());
+            }
+            println!("Timeout: {} ms", config.bash.timeout_ms);
+            println!(
+                "Confirmation: {}",
+                if config.bash.require_confirmation {
+                    "always"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+
+        tool_registry.add_provider(Box::new(LocalToolProvider::new(
+            &config.tavily_api_key,
+            config.bash.clone(),
+        )));
 
         // Add MCP filesystem tools if enabled
         if config.filesystem.enabled {
