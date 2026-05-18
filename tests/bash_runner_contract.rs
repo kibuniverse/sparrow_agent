@@ -2,14 +2,17 @@ use std::path::PathBuf;
 
 use sparrow_agent::{
     bash_runner::{BashCommandRequest, BashCommandStatus, BashRunner},
-    config::BashConfig,
+    config::{BashApprovalMode, BashConfig},
 };
 
 fn test_config(root: PathBuf) -> BashConfig {
     BashConfig {
         enabled: true,
         roots: vec![root],
-        require_confirmation: false,
+        approval_mode: BashApprovalMode::NeverPrompt,
+        approval_policy_path: tempfile::tempdir().unwrap().path().join("policies.json"),
+        approval_policy_ttl_days: 90,
+        model_low_risk_threshold: 0.85,
         timeout_ms: 30_000,
         max_timeout_ms: 120_000,
         max_command_chars: 8_192,
@@ -21,7 +24,7 @@ fn test_config(root: PathBuf) -> BashConfig {
 #[tokio::test]
 async fn bash_runner_executes_command_and_returns_structured_output() {
     let root = tempfile::tempdir().unwrap();
-    let runner = BashRunner::new(test_config(root.path().to_path_buf()));
+    let runner = BashRunner::new(test_config(root.path().to_path_buf()), None);
 
     let output = runner
         .run(BashCommandRequest {
@@ -42,9 +45,28 @@ async fn bash_runner_executes_command_and_returns_structured_output() {
 }
 
 #[tokio::test]
+async fn bash_runner_output_includes_approval_summary() {
+    let root = tempfile::tempdir().unwrap();
+    let runner = BashRunner::new(test_config(root.path().to_path_buf()), None);
+
+    let output = runner
+        .run(BashCommandRequest {
+            command: "printf 'hello'".into(),
+            cwd: Some(root.path().to_path_buf()),
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .unwrap();
+
+    let approval = output.approval.unwrap();
+    assert_eq!(approval.mode, "never");
+    assert_eq!(approval.approved_by, "never_prompt");
+}
+
+#[tokio::test]
 async fn bash_runner_reports_nonzero_exit_without_treating_it_as_tool_failure() {
     let root = tempfile::tempdir().unwrap();
-    let runner = BashRunner::new(test_config(root.path().to_path_buf()));
+    let runner = BashRunner::new(test_config(root.path().to_path_buf()), None);
 
     let output = runner
         .run(BashCommandRequest {
@@ -65,7 +87,7 @@ async fn bash_runner_reports_nonzero_exit_without_treating_it_as_tool_failure() 
 async fn bash_runner_rejects_cwd_outside_allowed_roots() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
-    let runner = BashRunner::new(test_config(root.path().to_path_buf()));
+    let runner = BashRunner::new(test_config(root.path().to_path_buf()), None);
 
     let error = runner
         .run(BashCommandRequest {
@@ -82,7 +104,7 @@ async fn bash_runner_rejects_cwd_outside_allowed_roots() {
 #[tokio::test]
 async fn bash_runner_times_out_and_kills_long_running_commands() {
     let root = tempfile::tempdir().unwrap();
-    let runner = BashRunner::new(test_config(root.path().to_path_buf()));
+    let runner = BashRunner::new(test_config(root.path().to_path_buf()), None);
 
     let output = runner
         .run(BashCommandRequest {
@@ -102,7 +124,7 @@ async fn bash_runner_truncates_stdout_without_splitting_utf8() {
     let root = tempfile::tempdir().unwrap();
     let mut config = test_config(root.path().to_path_buf());
     config.stream_max_bytes = 3;
-    let runner = BashRunner::new(config);
+    let runner = BashRunner::new(config, None);
 
     let output = runner
         .run(BashCommandRequest {

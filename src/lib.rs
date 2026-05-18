@@ -1,5 +1,9 @@
 pub mod agent;
 pub mod api;
+pub mod bash_approval_gate;
+pub mod bash_approval_policy;
+pub mod bash_model_classifier;
+pub mod bash_risk;
 pub mod bash_runner;
 pub mod cli_observer;
 pub mod client;

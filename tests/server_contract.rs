@@ -239,7 +239,10 @@ fn test_config() -> AppConfig {
         bash: BashConfig {
             enabled: false,
             roots: vec![".".into()],
-            require_confirmation: false,
+            approval_mode: sparrow_agent::config::BashApprovalMode::NeverPrompt,
+            approval_policy_path: tempfile::tempdir().unwrap().path().join("policies.json"),
+            approval_policy_ttl_days: 90,
+            model_low_risk_threshold: 0.85,
             timeout_ms: 30_000,
             max_timeout_ms: 120_000,
             max_command_chars: 8_192,

@@ -21,11 +21,15 @@ pub struct LocalToolProvider {
 }
 
 impl LocalToolProvider {
-    pub fn new(tavily_api_key: impl Into<String>, bash_config: BashConfig) -> Self {
+    pub fn new(
+        tavily_api_key: impl Into<String>,
+        bash_config: BashConfig,
+        deepseek_api_key: Option<String>,
+    ) -> Self {
         let mut definitions = vec![web_search_tool(), run_rust_wasm_tool()];
         let bash_runner = if bash_config.enabled {
             definitions.push(run_bash_command_tool(&bash_config));
-            Some(BashRunner::new(bash_config))
+            Some(BashRunner::new(bash_config, deepseek_api_key))
         } else {
             None
         };

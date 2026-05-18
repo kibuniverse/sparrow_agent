@@ -11,7 +11,7 @@ Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSee
 - **可插拔工具提供者**：本地工具和 MCP 工具统一实现 `ToolProvider`，由 `ToolRegistry` 汇总定义并分发调用。
 - **Web 搜索**：内置 `webSearch`，通过 Tavily API 返回答案、摘要和来源链接。
 - **Rust WASM 沙盒执行**：内置 `runRustWasm`，将模型生成的 Rust 代码编译到 `wasm32-unknown-unknown` 并用 wasmtime 隔离执行。
-- **Bash 命令工具**：内置 `runBashCommand`，默认关闭；仅 CLI Agent 可用，启用后每次执行前要求用户确认，并限制 cwd、超时、输出和环境变量。
+- **Bash 命令工具**：内置 `runBashCommand`，默认关闭；仅 CLI Agent 可用，启用后使用智能审批自动放行低风险命令，高风险命令仍会确认或拦截，并限制 cwd、超时、输出和环境变量。
 - **MCP 文件系统工具**：默认尝试通过 `npx @modelcontextprotocol/server-filesystem` 接入文件系统工具，支持 roots、只读/读写模式、写入确认和敏感路径 denylist。
 - **Agent 调用可视化**：HTTP API + SSE 会推送 task、model call、model output、tool call 等结构化事件，前端可实时展示调用树和详情。
 - **安全配置管理**：API 密钥可交互式初始化并保存到本地配置文件，也可由环境变量覆盖。
@@ -174,6 +174,10 @@ pnpm dev
 | `SPARROW_SHOW_TOOL_CALL_DELTAS` | CLI 是否展示工具调用参数增量 | `false` |
 | `SPARROW_BASH_ENABLED` | 是否启用 CLI Bash 命令工具 `runBashCommand` | `false` |
 | `SPARROW_BASH_ROOTS` | Bash 工具允许使用的 cwd 根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
+| `SPARROW_BASH_APPROVAL_MODE` | Bash 审批模式：`smart` 自动放行低风险命令，`always` 每次确认，`never` 不提示但仍拦截 blocked 命令 | `smart` |
+| `SPARROW_BASH_APPROVAL_POLICY_PATH` | 低风险审批策略缓存 JSON 文件位置 | `~/.sparrow_agent/bash_approval_policies.json` |
+| `SPARROW_BASH_APPROVAL_POLICY_TTL_DAYS` | 新增低风险策略的默认过期天数 | `90` |
+| `SPARROW_BASH_MODEL_LOW_RISK_THRESHOLD` | 灰区命令由模型判为低风险时的最低置信度 | `0.85` |
 | `SPARROW_BASH_TIMEOUT_MS` | Bash 工具默认超时毫秒数，上限固定为 `120000` | `30000` |
 | `SPARROW_BASH_MAX_COMMAND_CHARS` | Bash 工具单条命令最大字符数 | `8192` |
 | `SPARROW_BASH_STREAM_MAX_BYTES` | Bash 工具 stdout/stderr 各自注入前保留的最大字节数 | `8192` |
@@ -301,15 +305,20 @@ SPARROW_BASH_ENABLED=true cargo run
 
 安全措施：
 
-- 每次命令执行前都会在终端展示 cwd、timeout 和完整 command，并要求用户输入 `y` 或 `yes` 确认；
+- 默认 `smart` 审批模式会用本地规则自动批准低风险命令，例如 `pwd`、`ls`、`rg`、`git status`、`cargo check`；
+- `always` 模式会恢复逐条确认；`never` 模式不提示确认，但仍会运行 blocked hard rules，不能绕过明显危险命令；
+- 中风险命令会在终端展示 risk、reason、cwd、timeout 和完整 command 后等待确认；带低风险候选策略时可输入 `a` 记住相似命令；
+- 高风险命令每次都要求确认，且不会写入持久自动批准策略；
+- blocked 命令会直接拒绝，例如删除系统关键路径、fork bomb 或明显资源耗尽攻击；
 - 每次调用都是独立进程，不保留上一条命令的 cwd、环境或 shell 状态；
 - 命令通过非交互 Bash 运行，不读取用户 profile 或 rc 文件；
 - cwd 必须存在且位于 `SPARROW_BASH_ROOTS` 内；
 - 默认超时 30 秒，模型传入的 `timeout_ms` 会被限制在 120 秒以内；
 - stdout 和 stderr 分别按 `SPARROW_BASH_STREAM_MAX_BYTES` 截断，截断时不会切断 UTF-8 字符；
-- 子进程默认清空环境，仅传入 allowlist 中的变量，且变量名包含 key、token、secret、password、authorization 的项总会被过滤。
+- 子进程默认清空环境，仅传入 allowlist 中的变量，且变量名包含 key、token、secret、password、authorization 的项总会被过滤；
+- 低风险策略缓存保存在可读 JSON 文件中，默认路径为 `~/.sparrow_agent/bash_approval_policies.json`，Unix 权限为 `0600`，可手动删除或编辑来撤销策略。
 
-注意：这是一个受控的本地命令执行工具，不是强 OS 沙盒。cwd root 校验用于约束工作目录，不能阻止命令显式访问系统上的其他绝对路径；因此默认关闭，并且每次执行都需要用户确认。
+注意：这是一个受控的本地命令执行工具，不是强 OS 沙盒。cwd root 校验用于约束工作目录，不能阻止命令显式访问系统上的其他绝对路径；因此工具默认关闭，本地 hard rules 会在策略缓存命中后重新运行。
 
 ## MCP 文件系统安全边界
 
@@ -337,7 +346,11 @@ SPARROW_FILESYSTEM_MODE=read-write cargo run
 | `src/agent.rs` | Agent 编排器，维护消息历史、模型请求、工具循环、trace 转发 |
 | `src/client.rs` | DeepSeek HTTP/SSE 客户端 |
 | `src/api.rs` | DeepSeek Chat Completion 请求、响应和工具调用数据结构 |
-| `src/bash_runner.rs` | Bash 命令执行、cwd 校验、确认、超时、输出截断和环境变量过滤 |
+| `src/bash_runner.rs` | Bash 命令执行、cwd 校验、审批接入、超时、输出截断和环境变量过滤 |
+| `src/bash_risk.rs` | Bash 命令风险等级、本地规则分类和命令形状规范化 |
+| `src/bash_approval_policy.rs` | 低风险 Bash 审批策略缓存、matcher 和持久化 |
+| `src/bash_approval_gate.rs` | Bash 智能审批编排，本地规则、策略缓存、模型灰区分类和审批摘要 |
+| `src/bash_model_classifier.rs` | DeepSeek 灰区 Bash 风险分类封装 |
 | `src/streaming.rs` | 流式响应累积器和 Agent stream event 抽象 |
 | `src/tool_provider.rs` | 工具 provider trait |
 | `src/tool_registry.rs` | 工具定义汇总、调用分发、并行执行和 traced execution |
