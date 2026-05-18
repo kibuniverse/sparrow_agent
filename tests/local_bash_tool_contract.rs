@@ -4,8 +4,8 @@ use serde_json::json;
 use sparrow_agent::{
     api::{FunctionCall, ToolCall},
     config::{
-        AppConfig, BashConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode,
-        StreamingConfig, ToolResultConfig,
+        AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, FilesystemConfig,
+        FilesystemMode, StreamingConfig, ToolResultConfig,
     },
     local_tools::LocalToolProvider,
     server::ServerState,
@@ -17,7 +17,10 @@ fn bash_config(enabled: bool, root: PathBuf) -> BashConfig {
     BashConfig {
         enabled,
         roots: vec![root],
-        require_confirmation: false,
+        approval_mode: BashApprovalMode::NeverPrompt,
+        approval_policy_path: tempfile::tempdir().unwrap().path().join("policies.json"),
+        approval_policy_ttl_days: 90,
+        model_low_risk_threshold: 0.85,
         timeout_ms: 30_000,
         max_timeout_ms: 120_000,
         max_command_chars: 8_192,
@@ -60,7 +63,8 @@ fn test_app_config(bash: BashConfig) -> AppConfig {
 #[test]
 fn local_provider_excludes_bash_tool_when_disabled() {
     let root = tempfile::tempdir().unwrap();
-    let provider = LocalToolProvider::new("test", bash_config(false, root.path().to_path_buf()));
+    let provider =
+        LocalToolProvider::new("test", bash_config(false, root.path().to_path_buf()), None);
 
     assert!(
         !provider
@@ -73,7 +77,8 @@ fn local_provider_excludes_bash_tool_when_disabled() {
 #[tokio::test]
 async fn local_provider_dispatches_bash_tool_when_enabled() {
     let root = tempfile::tempdir().unwrap();
-    let provider = LocalToolProvider::new("test", bash_config(true, root.path().to_path_buf()));
+    let provider =
+        LocalToolProvider::new("test", bash_config(true, root.path().to_path_buf()), None);
 
     assert!(
         provider

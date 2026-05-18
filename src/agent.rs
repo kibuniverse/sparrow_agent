@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     api::{ChatCompletionRequest, ChatMessage, ChoiceMessage, ThinkingConfig, Usage},
     client::DeepSeekClient,
-    config::AppConfig,
+    config::{AppConfig, BashApprovalMode},
     console::ConsoleTraceRenderer,
     debug_log,
     local_tools::LocalToolProvider,
@@ -52,19 +52,19 @@ impl Agent {
                 println!("  - {}", display.display());
             }
             println!("Timeout: {} ms", config.bash.timeout_ms);
-            println!(
-                "Confirmation: {}",
-                if config.bash.require_confirmation {
-                    "always"
-                } else {
-                    "disabled"
-                }
-            );
+            println!("Bash approval mode: {}", config.bash.approval_mode.as_str());
+            if config.bash.approval_mode == BashApprovalMode::Smart {
+                println!(
+                    "Bash approval policy cache: {}",
+                    config.bash.approval_policy_path.display()
+                );
+            }
         }
 
         tool_registry.add_provider(Box::new(LocalToolProvider::new(
             &config.tavily_api_key,
             config.bash.clone(),
+            Some(config.api_key.clone()),
         )));
 
         // Add MCP filesystem tools if enabled

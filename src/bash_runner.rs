@@ -12,9 +12,16 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
+    sync::Mutex,
 };
 
-use crate::config::BashConfig;
+use crate::{
+    bash_approval_gate::{
+        BashApprovalAction, BashApprovalGate, BashApprovalSummary, BashGateDecision,
+    },
+    bash_risk::BashRiskLevel,
+    config::BashConfig,
+};
 
 const BASH_PROGRAM: &str = "/bin/bash";
 
@@ -43,16 +50,24 @@ pub struct BashCommandOutput {
     pub stderr: String,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub approval: Option<BashApprovalSummary>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BashRunner {
     config: BashConfig,
+    approval_gate: std::sync::Arc<Mutex<BashApprovalGate>>,
 }
 
 impl BashRunner {
-    pub fn new(config: BashConfig) -> Self {
-        Self { config }
+    pub fn new(config: BashConfig, api_key: Option<String>) -> Self {
+        Self {
+            approval_gate: std::sync::Arc::new(Mutex::new(BashApprovalGate::new(
+                config.clone(),
+                api_key,
+            ))),
+            config,
+        }
     }
 
     pub async fn run(&self, request: BashCommandRequest) -> Result<BashCommandOutput> {
@@ -61,20 +76,71 @@ impl BashRunner {
         let cwd = self.resolve_cwd(request.cwd.as_deref())?;
         let timeout_ms = self.resolve_timeout_ms(request.timeout_ms)?;
 
-        if self.config.require_confirmation
-            && !prompt_confirmation(&request.command, &cwd, timeout_ms)?
-        {
-            return Ok(BashCommandOutput {
-                status: BashCommandStatus::Denied,
-                exit_code: None,
-                duration_ms: 0,
-                cwd,
-                stdout: String::new(),
-                stderr: String::new(),
-                stdout_truncated: false,
-                stderr_truncated: false,
-            });
-        }
+        let approval_decision = {
+            let mut gate = self.approval_gate.lock().await;
+            gate.decide(&request.command, &cwd, timeout_ms).await?
+        };
+        let approval = match approval_decision.action.clone() {
+            BashApprovalAction::Approved => {
+                if let Some(summary) = &approval_decision.summary {
+                    if summary.approved_by == "policy_cache" {
+                        println!(
+                            "bash approval> auto-approved low-risk command by policy {}: {}",
+                            summary.policy_id.as_deref().unwrap_or("unknown"),
+                            request.command
+                        );
+                    } else if matches!(approval_decision.risk, BashRiskLevel::Low) {
+                        println!(
+                            "bash approval> auto-approved low-risk command by {}: {}",
+                            summary.approved_by, request.command
+                        );
+                    }
+                }
+                approval_decision.summary.clone()
+            }
+            BashApprovalAction::Blocked { reason } => {
+                println!("bash approval> blocked command: {reason}");
+                return Ok(denied_output(
+                    cwd,
+                    approval_decision.summary.clone(),
+                    reason,
+                ));
+            }
+            BashApprovalAction::RequiresConfirmation {
+                can_remember_policy,
+            } => {
+                match prompt_risk_confirmation(
+                    &request.command,
+                    &cwd,
+                    timeout_ms,
+                    &approval_decision,
+                    can_remember_policy,
+                )? {
+                    PromptDecision::Deny => {
+                        return Ok(denied_output(
+                            cwd,
+                            approval_decision.summary.clone(),
+                            String::new(),
+                        ));
+                    }
+                    PromptDecision::ApproveOnce => approval_decision.summary.clone(),
+                    PromptDecision::ApproveAndRemember => {
+                        let mut gate = self.approval_gate.lock().await;
+                        match gate.remember_policy(&approval_decision, cwd.clone()) {
+                            Ok(policy_id) => {
+                                println!(
+                                    "bash approval> remembered policy {policy_id} for similar commands"
+                                );
+                            }
+                            Err(error) => {
+                                eprintln!("bash approval> failed to remember policy: {error}");
+                            }
+                        }
+                        approval_decision.summary.clone()
+                    }
+                }
+            }
+        };
 
         let started = Instant::now();
         let mut command = Command::new(BASH_PROGRAM);
@@ -139,6 +205,7 @@ impl BashRunner {
             stderr: stderr.text,
             stdout_truncated: stdout.truncated,
             stderr_truncated: stderr.truncated,
+            approval,
         })
     }
 
@@ -295,21 +362,69 @@ fn is_secret_env_name(name: &str) -> bool {
         .any(|needle| upper.contains(needle))
 }
 
-fn prompt_confirmation(command: &str, cwd: &Path, timeout_ms: u64) -> Result<bool> {
-    println!("Sparrow wants to run bash command:");
+fn denied_output(
+    cwd: PathBuf,
+    approval: Option<BashApprovalSummary>,
+    stderr: String,
+) -> BashCommandOutput {
+    BashCommandOutput {
+        status: BashCommandStatus::Denied,
+        exit_code: None,
+        duration_ms: 0,
+        cwd,
+        stdout: String::new(),
+        stderr,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        approval,
+    }
+}
+
+enum PromptDecision {
+    ApproveOnce,
+    ApproveAndRemember,
+    Deny,
+}
+
+fn prompt_risk_confirmation(
+    command: &str,
+    cwd: &Path,
+    timeout_ms: u64,
+    decision: &BashGateDecision,
+    can_remember_policy: bool,
+) -> Result<PromptDecision> {
+    if decision.risk == BashRiskLevel::High {
+        println!("Sparrow wants to run high-risk bash command:");
+    } else {
+        println!("Sparrow wants to run bash command:");
+    }
+    if let Some(summary) = &decision.summary {
+        println!("  risk: {}", summary.risk);
+        println!("  reason: {}", summary.reason);
+    }
     println!("  cwd: {}", cwd.display());
     println!("  timeout: {timeout_ms} ms");
     println!("  command:");
     for line in command.lines() {
         println!("    {line}");
     }
-    print!("Approve? [y/N] ");
+    if can_remember_policy {
+        print!("Approve? [y] once / [a] approve similar low-risk policy / [n] deny ");
+    } else {
+        print!("Approve once? [y/N] ");
+    }
     io::stdout().flush()?;
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let answer = input.trim().to_ascii_lowercase();
-    Ok(answer == "y" || answer == "yes")
+    if can_remember_policy && matches!(answer.as_str(), "a" | "approve") {
+        Ok(PromptDecision::ApproveAndRemember)
+    } else if matches!(answer.as_str(), "y" | "yes") {
+        Ok(PromptDecision::ApproveOnce)
+    } else {
+        Ok(PromptDecision::Deny)
+    }
 }
 
 #[cfg(test)]
@@ -320,7 +435,10 @@ mod tests {
         BashConfig {
             enabled: true,
             roots: vec![PathBuf::from(".")],
-            require_confirmation: false,
+            approval_mode: crate::config::BashApprovalMode::NeverPrompt,
+            approval_policy_path: std::env::temp_dir().join("sparrow-test-policies.json"),
+            approval_policy_ttl_days: 90,
+            model_low_risk_threshold: 0.85,
             timeout_ms: 30_000,
             max_timeout_ms: 120_000,
             max_command_chars: 8_192,

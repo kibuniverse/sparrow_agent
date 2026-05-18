@@ -23,6 +23,8 @@ const DEFAULT_BASH_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_BASH_MAX_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_BASH_MAX_COMMAND_CHARS: usize = 8_192;
 const DEFAULT_BASH_STREAM_MAX_BYTES: usize = 8 * 1024;
+const DEFAULT_BASH_APPROVAL_POLICY_TTL_DAYS: u64 = 90;
+const DEFAULT_BASH_MODEL_LOW_RISK_THRESHOLD: f32 = 0.85;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -329,11 +331,40 @@ impl ConfirmationPolicy {
 
 // ── Bash config ───────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashApprovalMode {
+    AlwaysPrompt,
+    Smart,
+    NeverPrompt,
+}
+
+impl BashApprovalMode {
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "always" => Self::AlwaysPrompt,
+            "smart" => Self::Smart,
+            "never" => Self::NeverPrompt,
+            _ => Self::Smart,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AlwaysPrompt => "always",
+            Self::Smart => "smart",
+            Self::NeverPrompt => "never",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BashConfig {
     pub enabled: bool,
     pub roots: Vec<PathBuf>,
-    pub require_confirmation: bool,
+    pub approval_mode: BashApprovalMode,
+    pub approval_policy_path: PathBuf,
+    pub approval_policy_ttl_days: u64,
+    pub model_low_risk_threshold: f32,
     pub timeout_ms: u64,
     pub max_timeout_ms: u64,
     pub max_command_chars: usize,
@@ -352,6 +383,24 @@ impl BashConfig {
             .map(|value| split_paths(&value))
             .filter(|roots| !roots.is_empty())
             .unwrap_or_else(|| vec![PathBuf::from(".")]);
+
+        let approval_mode = read_env_value("SPARROW_BASH_APPROVAL_MODE")
+            .map(|value| BashApprovalMode::from_str(&value))
+            .unwrap_or(BashApprovalMode::Smart);
+
+        let approval_policy_path = read_env_value("SPARROW_BASH_APPROVAL_POLICY_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(default_bash_approval_policy_path);
+
+        let approval_policy_ttl_days = read_env_value("SPARROW_BASH_APPROVAL_POLICY_TTL_DAYS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_BASH_APPROVAL_POLICY_TTL_DAYS);
+
+        let model_low_risk_threshold = read_env_value("SPARROW_BASH_MODEL_LOW_RISK_THRESHOLD")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| (0.0..=1.0).contains(value))
+            .unwrap_or(DEFAULT_BASH_MODEL_LOW_RISK_THRESHOLD);
 
         let timeout_ms = read_env_value("SPARROW_BASH_TIMEOUT_MS")
             .and_then(|value| value.parse::<u64>().ok())
@@ -377,7 +426,10 @@ impl BashConfig {
         Self {
             enabled,
             roots,
-            require_confirmation: true,
+            approval_mode,
+            approval_policy_path,
+            approval_policy_ttl_days,
+            model_low_risk_threshold,
             timeout_ms,
             max_timeout_ms: DEFAULT_BASH_MAX_TIMEOUT_MS,
             max_command_chars,
@@ -385,6 +437,13 @@ impl BashConfig {
             env_allowlist,
         }
     }
+}
+
+fn default_bash_approval_policy_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    Path::new(&home)
+        .join(CONFIG_DIR_NAME)
+        .join("bash_approval_policies.json")
 }
 
 fn split_paths(value: &str) -> Vec<PathBuf> {
@@ -516,4 +575,39 @@ fn default_deny_patterns() -> Vec<String> {
         "**/*.key".into(),
         ".sparrow_agent/**".into(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bash_approval_mode_from_str_parses_known_values() {
+        assert_eq!(
+            BashApprovalMode::from_str("always"),
+            BashApprovalMode::AlwaysPrompt
+        );
+        assert_eq!(BashApprovalMode::from_str("smart"), BashApprovalMode::Smart);
+        assert_eq!(
+            BashApprovalMode::from_str("never"),
+            BashApprovalMode::NeverPrompt
+        );
+    }
+
+    #[test]
+    fn bash_approval_mode_from_str_defaults_to_smart() {
+        assert_eq!(
+            BashApprovalMode::from_str("surprise"),
+            BashApprovalMode::Smart
+        );
+    }
+
+    #[test]
+    fn bash_config_from_env_uses_smart_approval_by_default() {
+        let config = BashConfig::from_env();
+
+        assert_eq!(config.approval_mode, BashApprovalMode::Smart);
+        assert_eq!(config.approval_policy_ttl_days, 90);
+        assert_eq!(config.model_low_risk_threshold, 0.85);
+    }
 }
