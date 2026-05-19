@@ -172,7 +172,7 @@ pnpm dev
 | `SPARROW_STREAMING_ENABLED` | 是否启用模型流式调用 | `true` |
 | `SPARROW_SHOW_REASONING` | CLI 是否展示 reasoning | `true` |
 | `SPARROW_SHOW_TOOL_CALL_DELTAS` | CLI 是否展示工具调用参数增量 | `false` |
-| `SPARROW_BASH_ENABLED` | 是否启用 CLI Bash 命令工具 `runBashCommand` | `false` |
+| `SPARROW_BASH_ENABLED` | 是否启用 CLI Bash 命令工具 `runBashCommand` | `true` |
 | `SPARROW_BASH_ROOTS` | Bash 工具允许使用的 cwd 根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
 | `SPARROW_BASH_APPROVAL_MODE` | Bash 审批模式：`smart` 自动放行低风险命令，`always` 每次确认，`never` 不提示但仍拦截 blocked 命令 | `smart` |
 | `SPARROW_BASH_APPROVAL_POLICY_PATH` | 低风险审批策略缓存 JSON 文件位置 | `~/.sparrow_agent/bash_approval_policies.json` |

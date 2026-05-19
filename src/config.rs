@@ -377,7 +377,7 @@ impl BashConfig {
         let enabled = env::var("SPARROW_BASH_ENABLED")
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         let roots = read_env_value("SPARROW_BASH_ROOTS")
             .map(|value| split_paths(&value))
