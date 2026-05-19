@@ -89,7 +89,7 @@ impl AppConfig {
             api_key,
             tavily_api_key,
             model: DEFAULT_MODEL.into(),
-            system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
+            system_prompt: default_system_prompt(),
             reasoning_effort: DEFAULT_REASONING_EFFORT.into(),
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             filesystem: FilesystemConfig::from_env(),
@@ -110,7 +110,7 @@ impl AppConfig {
             api_key,
             tavily_api_key,
             model: DEFAULT_MODEL.into(),
-            system_prompt: DEFAULT_SYSTEM_PROMPT.into(),
+            system_prompt: default_system_prompt(),
             reasoning_effort: DEFAULT_REASONING_EFFORT.into(),
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
             filesystem: FilesystemConfig::from_env(),
@@ -226,6 +226,45 @@ fn print_setup_header_once(config_path: &Path, printed: &mut bool) {
         config_path.display()
     );
     *printed = true;
+}
+
+fn default_system_prompt() -> String {
+    let current_dir = env::current_dir().ok();
+    let executable_path = env::current_exe().ok();
+
+    system_prompt_with_runtime_paths(
+        DEFAULT_SYSTEM_PROMPT,
+        current_dir.as_deref(),
+        executable_path.as_deref(),
+    )
+}
+
+fn system_prompt_with_runtime_paths(
+    base_prompt: &str,
+    current_dir: Option<&Path>,
+    executable_path: Option<&Path>,
+) -> String {
+    let mut prompt = base_prompt.trim_end().to_string();
+    prompt.push_str("\n\nRuntime file system context:");
+
+    if let Some(current_dir) = current_dir {
+        prompt.push_str(&format!(
+            "\n- Current working directory: {}",
+            current_dir.display()
+        ));
+    }
+
+    if let Some(executable_path) = executable_path {
+        prompt.push_str(&format!(
+            "\n- Running Sparrow Agent executable path: {}",
+            executable_path.display()
+        ));
+    }
+
+    prompt.push_str(
+        "\nUse these exact paths when referring to the agent's local file system. Do not invent or guess absolute paths.",
+    );
+    prompt
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -609,5 +648,25 @@ mod tests {
         assert_eq!(config.approval_mode, BashApprovalMode::Smart);
         assert_eq!(config.approval_policy_ttl_days, 90);
         assert_eq!(config.model_low_risk_threshold, 0.85);
+    }
+
+    #[test]
+    fn system_prompt_includes_runtime_file_system_paths() {
+        let prompt = system_prompt_with_runtime_paths(
+            "base prompt",
+            Some(Path::new("/workspace/sparrow_agent")),
+            Some(Path::new(
+                "/workspace/sparrow_agent/target/debug/sparrow_agent",
+            )),
+        );
+
+        assert!(prompt.contains("base prompt"));
+        assert!(prompt.contains("Current working directory: /workspace/sparrow_agent"));
+        assert!(
+            prompt.contains(
+                "Running Sparrow Agent executable path: /workspace/sparrow_agent/target/debug/sparrow_agent"
+            )
+        );
+        assert!(prompt.contains("Do not invent or guess absolute paths."));
     }
 }
