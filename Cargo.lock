@@ -2094,6 +2094,7 @@ dependencies = [
  "futures-util",
  "globset",
  "indicatif",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
@@ -2104,6 +2105,7 @@ dependencies = [
  "tower",
  "tower-http",
  "ulid",
+ "unicode-width",
  "url",
  "wasmtime",
 ]
