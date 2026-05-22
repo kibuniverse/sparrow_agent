@@ -8,7 +8,7 @@ use serde_json::json;
 use sparrow_agent::{
     config::{
         AppConfig, BashConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode,
-        StreamingConfig, ToolResultConfig,
+        StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
     server::{ServerState, build_router},
     trace::TraceEventType,
@@ -249,5 +249,6 @@ fn test_config() -> AppConfig {
             stream_max_bytes: 8 * 1024,
             env_allowlist: vec!["PATH".into()],
         },
+        sub_agent: SubAgentConfig::default(),
     }
 }

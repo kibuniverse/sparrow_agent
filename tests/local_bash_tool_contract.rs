@@ -5,7 +5,7 @@ use sparrow_agent::{
     api::{FunctionCall, ToolCall},
     config::{
         AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, FilesystemConfig,
-        FilesystemMode, StreamingConfig, ToolResultConfig,
+        FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
     local_tools::LocalToolProvider,
     server::ServerState,
@@ -57,6 +57,7 @@ fn test_app_config(bash: BashConfig) -> AppConfig {
             show_tool_call_deltas: false,
         },
         bash,
+        sub_agent: SubAgentConfig::default(),
     }
 }
 

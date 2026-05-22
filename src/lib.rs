@@ -16,6 +16,7 @@ pub mod mcp;
 pub mod rust_wasm_runner;
 pub mod server;
 pub mod streaming;
+pub mod sub_agent;
 pub mod tool_provider;
 pub mod tool_registry;
 pub mod tool_result_processor;

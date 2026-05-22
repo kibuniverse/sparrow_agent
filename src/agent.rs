@@ -14,6 +14,7 @@ use crate::{
     local_tools::LocalToolProvider,
     mcp::{client::McpClient, filesystem_provider::McpToolProvider},
     streaming::{AgentEventSink, AgentStreamEvent, StreamAccumulator},
+    sub_agent::SubAgentToolProvider,
     tool_provider::ToolProvider,
     tool_registry::ToolRegistry,
     tool_result_processor::{ToolResultProcessor, ToolResultProcessorConfig},
@@ -33,6 +34,17 @@ pub struct Agent {
 
 impl Agent {
     pub async fn new(config: AppConfig) -> Result<Self> {
+        Self::new_inner(config, None).await
+    }
+
+    pub(crate) async fn new_with_tool_allowlist(
+        config: AppConfig,
+        allowed_tools: Vec<String>,
+    ) -> Result<Self> {
+        Self::new_inner(config, Some(allowed_tools)).await
+    }
+
+    async fn new_inner(config: AppConfig, tool_allowlist: Option<Vec<String>>) -> Result<Self> {
         let client = DeepSeekClient::new(&config.api_key);
         let messages = vec![ChatMessage::system(&config.system_prompt)];
         let context_usage = ContextUsage::for_model(&config.model);
@@ -66,6 +78,10 @@ impl Agent {
             config.bash.clone(),
             Some(config.api_key.clone()),
         )));
+
+        if config.sub_agent.enabled && config.sub_agent.max_depth > 0 {
+            tool_registry.add_provider(Box::new(SubAgentToolProvider::new(config.clone())));
+        }
 
         // Add MCP filesystem tools if enabled
         if config.filesystem.enabled {
@@ -123,6 +139,10 @@ impl Agent {
             }
         }
 
+        if let Some(allowed_tools) = tool_allowlist {
+            tool_registry.restrict_to_allowed_tools(allowed_tools);
+        }
+
         Ok(Self {
             client,
             config,
@@ -151,6 +171,16 @@ impl Agent {
         input: impl Into<String>,
         sink: &dyn TraceSink,
     ) -> Result<()> {
+        self.handle_user_input_with_trace_result(input, sink)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn handle_user_input_with_trace_result(
+        &mut self,
+        input: impl Into<String>,
+        sink: &dyn TraceSink,
+    ) -> Result<String> {
         let started = Instant::now();
         let input = input.into();
 
@@ -175,7 +205,7 @@ impl Agent {
                         "final_answer": final_answer,
                     }),
                 );
-                Ok(())
+                Ok(final_answer)
             }
             Err(error) => {
                 sink.emit(
@@ -808,7 +838,7 @@ fn format_token_count(value: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ContextUsage, ContextUsageColor, StreamingTraceForwarder, format_token_count,
+        Agent, ContextUsage, ContextUsageColor, StreamingTraceForwarder, format_token_count,
         model_context_window_tokens, model_request_snapshot, model_response_snapshot,
         render_progress_bar,
     };
@@ -816,6 +846,10 @@ mod tests {
         api::{
             ChatCompletionRequest, ChatMessage, ChoiceMessage, CompletionTokensDetails,
             FunctionCall, PromptTokensDetails, ThinkingConfig, ToolCall, Usage,
+        },
+        config::{
+            AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, FilesystemConfig,
+            FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
         },
         streaming::{AgentEventSink, AgentStreamEvent},
         trace::{TraceEventType, TraceSink},
@@ -842,6 +876,41 @@ mod tests {
             Some(1_000_000)
         );
         assert_eq!(model_context_window_tokens("custom-model"), None);
+    }
+
+    #[tokio::test]
+    async fn parent_agent_registers_sub_agent_tool_when_enabled() {
+        let agent = Agent::new(agent_test_config(SubAgentConfig::default()))
+            .await
+            .unwrap();
+
+        let tool_names = agent
+            .tool_registry
+            .definitions()
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&"runSubAgentTask"));
+    }
+
+    #[tokio::test]
+    async fn child_agent_tool_allowlist_hides_sub_agent_tool() {
+        let agent = Agent::new_with_tool_allowlist(
+            agent_test_config(SubAgentConfig::default()),
+            vec!["webSearch".into()],
+        )
+        .await
+        .unwrap();
+
+        let tool_names = agent
+            .tool_registry
+            .definitions()
+            .iter()
+            .map(|definition| definition.function.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(tool_names, vec!["webSearch"]);
     }
 
     #[test]
@@ -1030,5 +1099,49 @@ mod tests {
         assert_eq!(events[1].0, TraceEventType::ModelOutputDelta);
         assert_eq!(events[1].1["tool_call"]["tool_call_id"], "call_1");
         assert!(forwarder.output_node_id().is_some());
+    }
+
+    fn agent_test_config(sub_agent: SubAgentConfig) -> AppConfig {
+        AppConfig {
+            api_key: "test".into(),
+            tavily_api_key: "test".into(),
+            model: "deepseek-chat".into(),
+            system_prompt: "You are a test agent.".into(),
+            reasoning_effort: "high".into(),
+            max_tool_rounds: 1,
+            filesystem: FilesystemConfig {
+                enabled: false,
+                roots: Vec::new(),
+                mode: FilesystemMode::ReadOnly,
+                confirm: ConfirmationPolicy::Never,
+                deny_patterns: Vec::new(),
+                max_read_bytes: 1,
+                max_write_bytes: 1,
+            },
+            mcp_servers: Vec::new(),
+            tool_results: ToolResultConfig {
+                max_injected_chars: 20_000,
+                output_dir: ".sparrow_agent/tool_outputs".into(),
+            },
+            streaming: StreamingConfig {
+                enabled: true,
+                show_reasoning: true,
+                show_tool_call_deltas: false,
+            },
+            bash: BashConfig {
+                enabled: false,
+                roots: vec![".".into()],
+                approval_mode: BashApprovalMode::NeverPrompt,
+                approval_policy_path: tempfile::tempdir().unwrap().path().join("policies.json"),
+                approval_policy_ttl_days: 90,
+                model_low_risk_threshold: 0.85,
+                timeout_ms: 30_000,
+                max_timeout_ms: 120_000,
+                max_command_chars: 8_192,
+                stream_max_bytes: 8 * 1024,
+                env_allowlist: vec!["PATH".into()],
+            },
+            sub_agent,
+        }
     }
 }

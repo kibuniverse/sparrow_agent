@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use anyhow::Result;
 use futures_util::future::join_all;
@@ -18,6 +18,7 @@ pub struct ToolRegistry {
     providers: Vec<Box<dyn ToolProvider>>,
     definitions: Vec<ToolDef>,
     result_processor: ToolResultProcessor,
+    allowed_tool_names: Option<HashSet<String>>,
 }
 
 impl ToolRegistry {
@@ -30,18 +31,34 @@ impl ToolRegistry {
             providers: Vec::new(),
             definitions: Vec::new(),
             result_processor,
+            allowed_tool_names: None,
         }
     }
 
     pub fn add_provider(&mut self, provider: Box<dyn ToolProvider>) {
         debug_log!("Adding tool provider: {}", provider.id());
+        let allowed_tool_names = self.allowed_tool_names.as_ref();
         self.definitions
-            .extend(provider.definitions().iter().cloned());
+            .extend(provider.definitions().iter().filter_map(|definition| {
+                allowed_tool_names
+                    .is_none_or(|allowed| allowed.contains(&definition.function.name))
+                    .then_some(definition.clone())
+            }));
         self.providers.push(provider);
     }
 
     pub fn definitions(&self) -> &[ToolDef] {
         &self.definitions
+    }
+
+    pub fn restrict_to_allowed_tools(
+        &mut self,
+        allowed_tool_names: impl IntoIterator<Item = String>,
+    ) {
+        let allowed_tool_names = allowed_tool_names.into_iter().collect::<HashSet<_>>();
+        self.definitions
+            .retain(|definition| allowed_tool_names.contains(&definition.function.name));
+        self.allowed_tool_names = Some(allowed_tool_names);
     }
 
     pub async fn execute_all(&self, tool_calls: &[ToolCall]) -> Vec<ToolExecutionResult> {
@@ -206,12 +223,25 @@ impl ToolRegistry {
     }
 
     async fn execute(&self, tool_call: &ToolCall) -> Result<String> {
+        if !self.tool_is_allowed(&tool_call.function.name) {
+            anyhow::bail!(
+                "tool '{}' is not allowed in this agent context",
+                tool_call.function.name
+            );
+        }
+
         for provider in &self.providers {
             if let Some(result) = provider.execute(tool_call).await? {
                 return Ok(result);
             }
         }
         anyhow::bail!("unknown tool: {}", tool_call.function.name);
+    }
+
+    fn tool_is_allowed(&self, tool_name: &str) -> bool {
+        self.allowed_tool_names
+            .as_ref()
+            .is_none_or(|allowed| allowed.contains(tool_name))
     }
 }
 
@@ -437,6 +467,22 @@ mod tests {
                 .unwrap()
                 .contains("unknown tool")
         );
+    }
+
+    #[tokio::test]
+    async fn restricted_registry_rejects_hidden_tool_execution() {
+        let mut registry = ToolRegistry::new();
+        registry.add_provider(Box::new(StaticProvider {
+            definitions: vec![ToolDef::function("knownTool", "Known tool")],
+        }));
+        registry.restrict_to_allowed_tools(Vec::new());
+
+        let results = registry
+            .execute_all(&[tool_call("call_1", "knownTool")])
+            .await;
+
+        assert!(results[0].content.contains("not allowed"));
+        assert!(registry.definitions().is_empty());
     }
 
     #[tokio::test]
