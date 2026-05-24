@@ -11,6 +11,7 @@ interface TraceArchivePageProps {
   state: TraceState
   onApplyArchive: (archive: TraceArchive) => void
   onBack: () => void
+  onOpenTask: (taskId: string) => void
   onReplay: (fileName: string) => void
   onSelectNode: (nodeId: string) => void
 }
@@ -20,6 +21,7 @@ export function TraceArchivePage({
   state,
   onApplyArchive,
   onBack,
+  onOpenTask,
   onReplay,
   onSelectNode,
 }: TraceArchivePageProps) {
@@ -86,7 +88,11 @@ export function TraceArchivePage({
         {error ? <div className="rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <TraceTimeline onSelectNode={onSelectNode} state={state} />
-          <TraceDetailPanel className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto" node={selectedNode} />
+          <TraceDetailPanel
+            className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
+            node={selectedNode}
+            onOpenTask={onOpenTask}
+          />
         </div>
       </div>
     </main>

@@ -50,6 +50,34 @@ fn trace_store_marks_succeeded_from_terminal_event() {
 }
 
 #[test]
+fn trace_store_can_create_task_with_preallocated_child_ids() {
+    let store = TraceStore::new();
+
+    let task = store.create_task_with_id(
+        "task_sub_fixed".into(),
+        "conv_sub_fixed".into(),
+        "msg_sub_fixed".into(),
+    );
+
+    assert_eq!(task.task_id, "task_sub_fixed");
+    assert_eq!(task.conversation_id, "conv_sub_fixed");
+    assert_eq!(task.client_message_id, "msg_sub_fixed");
+
+    store
+        .append_event(
+            &task.task_id,
+            TraceEventType::TaskStarted,
+            json!({ "message": "child" }),
+        )
+        .unwrap();
+
+    let snapshot = store.snapshot("task_sub_fixed").unwrap();
+    assert_eq!(snapshot.task_id, "task_sub_fixed");
+    assert_eq!(snapshot.conversation_id, "conv_sub_fixed");
+    assert_eq!(snapshot.events.len(), 1);
+}
+
+#[test]
 fn trace_store_fails_task_when_event_limit_is_exceeded() {
     let store = TraceStore::with_max_events(1);
     let task = store.create_task("conv_1".into(), "msg_1".into());

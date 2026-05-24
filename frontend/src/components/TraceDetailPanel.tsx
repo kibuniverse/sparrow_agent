@@ -6,9 +6,14 @@ import type { TraceNode } from '../types/trace'
 interface TraceDetailPanelProps {
   className?: string
   node: TraceNode | null
+  onOpenTask?: (taskId: string) => void
 }
 
-export function TraceDetailPanel({ className = 'lg:sticky lg:top-6', node }: TraceDetailPanelProps) {
+export function TraceDetailPanel({
+  className = 'lg:sticky lg:top-6',
+  node,
+  onOpenTask,
+}: TraceDetailPanelProps) {
   const panelClassName = `rounded-md border border-slate-300 bg-white p-5 ${className}`
 
   if (!node) {
@@ -30,12 +35,12 @@ export function TraceDetailPanel({ className = 'lg:sticky lg:top-6', node }: Tra
         <DetailItem label="开始时间" value={formatDate(node.startedAt)} />
         <DetailItem label="耗时" value={formatDuration(node.durationMs)} />
       </dl>
-      <div className="mt-5 space-y-5">{renderDetail(node)}</div>
+      <div className="mt-5 space-y-5">{renderDetail(node, onOpenTask)}</div>
     </aside>
   )
 }
 
-function renderDetail(node: TraceNode) {
+function renderDetail(node: TraceNode, onOpenTask?: (taskId: string) => void) {
   if (node.detail.type === 'model_call') {
     return (
       <>
@@ -110,18 +115,42 @@ function renderDetail(node: TraceNode) {
     )
   }
 
+  const detail = node.detail
+  const childTaskId = detail.childTaskId
+
   return (
     <>
-      <DetailItem label="工具名" value={node.detail.name} />
-      <DetailItem label="调用 ID" value={node.detail.toolCallId} />
-      {node.detail.error ? <DetailItem label="错误" value={node.detail.error} /> : null}
+      <DetailItem label="工具名" value={detail.name} />
+      <DetailItem label="调用 ID" value={detail.toolCallId} />
+      {detail.error ? <DetailItem label="错误" value={detail.error} /> : null}
+      {childTaskId ? (
+        <section className="rounded-md border border-sky-200 bg-sky-50 p-3">
+          <h3 className="text-sm font-medium text-slate-950">子任务</h3>
+          <p className="mt-1 break-words text-sm text-slate-700">{childTaskId}</p>
+          {detail.childConversationId ? (
+            <p className="mt-1 break-words text-xs text-slate-500">
+              {detail.childConversationId}
+            </p>
+          ) : null}
+          {onOpenTask ? (
+            <button
+              aria-label={`打开子任务 ${childTaskId}`}
+              className="mt-3 inline-flex h-8 items-center rounded-md border border-sky-300 bg-white px-3 text-sm font-medium text-sky-700 transition hover:border-sky-500 hover:text-sky-900"
+              onClick={() => onOpenTask(childTaskId)}
+              type="button"
+            >
+              打开子任务
+            </button>
+          ) : null}
+        </section>
+      ) : null}
       <section>
         <h3 className="mb-2 text-sm font-medium text-slate-950">参数</h3>
-        <JsonBlock snapshot={node.detail.arguments} />
+        <JsonBlock snapshot={detail.arguments} />
       </section>
       <section>
         <h3 className="mb-2 text-sm font-medium text-slate-950">输出</h3>
-        <JsonBlock snapshot={node.detail.output} />
+        <JsonBlock snapshot={detail.output} />
       </section>
     </>
   )

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-use crate::trace::{TaskStatus, TraceEvent, TraceEventType, TraceSink, trace_id};
+use crate::trace::{TaskStatus, TraceEvent, TraceEventType, TraceSink, TraceSinkContext, trace_id};
 
 const DEFAULT_MAX_EVENTS_PER_TASK: usize = 10_000;
 const BROADCAST_CHANNEL_CAPACITY: usize = 1024;
@@ -66,7 +66,29 @@ impl TraceStore {
         conversation_id: String,
         client_message_id: String,
     ) -> StoredTaskHandle {
+        self.create_task_inner(trace_id("task"), conversation_id, client_message_id)
+    }
+
+    pub fn create_task_with_id(
+        &self,
+        task_id: String,
+        conversation_id: String,
+        client_message_id: String,
+    ) -> StoredTaskHandle {
+        self.create_task_inner(task_id, conversation_id, client_message_id)
+    }
+
+    fn create_task_inner(
+        &self,
+        task_id: String,
+        conversation_id: String,
+        client_message_id: String,
+    ) -> StoredTaskHandle {
         let mut tasks = self.tasks.lock().expect("trace store lock poisoned");
+
+        if let Some(existing) = tasks.get(&task_id) {
+            return existing.handle();
+        }
 
         if let Some(existing) = tasks
             .values()
@@ -76,7 +98,6 @@ impl TraceStore {
         }
 
         let now = Utc::now();
-        let task_id = trace_id("task");
         let (tx, _rx) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         let task = StoredTask {
             task_id: task_id.clone(),
@@ -245,6 +266,13 @@ impl TraceStoreSink {
 impl TraceSink for TraceStoreSink {
     fn emit(&self, event_type: TraceEventType, payload: Value) {
         let _ = self.store.append_event(&self.task_id, event_type, payload);
+    }
+
+    fn context(&self) -> Option<TraceSinkContext> {
+        Some(TraceSinkContext {
+            store: Arc::clone(&self.store),
+            task_id: self.task_id.clone(),
+        })
     }
 }
 

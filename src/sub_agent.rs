@@ -2,15 +2,16 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::{sync::Semaphore, time::timeout};
 
 use crate::{
     agent::Agent,
     api::{ToolCall, ToolDef},
     config::{AppConfig, SubAgentConfig},
-    tool_provider::ToolProvider,
+    tool_provider::{ToolExecutionTraceContext, ToolProvider},
     trace::{TraceEventType, TraceSink, trace_id},
+    trace_store::TraceStoreSink,
 };
 
 const RUN_SUB_AGENT_TASK_TOOL: &str = "runSubAgentTask";
@@ -50,6 +51,24 @@ impl ToolProvider for SubAgentToolProvider {
     }
 
     async fn execute(&self, tool_call: &ToolCall) -> Result<Option<String>> {
+        self.execute_inner(tool_call, None).await
+    }
+
+    async fn execute_traced(
+        &self,
+        tool_call: &ToolCall,
+        trace_context: Option<&ToolExecutionTraceContext>,
+    ) -> Result<Option<String>> {
+        self.execute_inner(tool_call, trace_context.cloned()).await
+    }
+}
+
+impl SubAgentToolProvider {
+    async fn execute_inner(
+        &self,
+        tool_call: &ToolCall,
+        trace_context: Option<ToolExecutionTraceContext>,
+    ) -> Result<Option<String>> {
         if tool_call.function.name != RUN_SUB_AGENT_TASK_TOOL {
             return Ok(None);
         }
@@ -77,16 +96,23 @@ impl ToolProvider for SubAgentToolProvider {
         let timeout_ms = self.config.sub_agent.timeout_ms;
         let result = match timeout(
             Duration::from_millis(timeout_ms),
-            self.runner.run(request, plan),
+            self.runner.run(request, plan, trace_context.clone()),
         )
         .await
         {
             Ok(result) => result,
-            Err(_) => SubAgentResult::timeout(
-                child_task_id,
-                child_conversation_id,
-                format!("sub-agent task timed out after {timeout_ms} ms"),
-            ),
+            Err(_) => {
+                let warning = format!("sub-agent task timed out after {timeout_ms} ms");
+                if let Some(trace_context) = &trace_context {
+                    trace_context.parent_trace.store.mark_failed(
+                        &child_task_id,
+                        timeout_ms,
+                        warning.clone(),
+                    );
+                }
+
+                SubAgentResult::timeout(child_task_id, child_conversation_id, warning)
+            }
         };
 
         drop(permit);
@@ -321,9 +347,17 @@ impl SubAgentRunner {
         Self { parent_config }
     }
 
-    pub async fn run(&self, request: SubAgentRequest, plan: SubAgentRunPlan) -> SubAgentResult {
+    pub async fn run(
+        &self,
+        request: SubAgentRequest,
+        plan: SubAgentRunPlan,
+        trace_context: Option<ToolExecutionTraceContext>,
+    ) -> SubAgentResult {
         let mut config = self.derive_child_config(&plan);
         config.system_prompt = sub_agent_system_prompt(&self.parent_config.system_prompt);
+        let child_sink = trace_context
+            .as_ref()
+            .map(|trace_context| create_child_trace_sink(&plan, trace_context));
 
         let mut agent =
             match Agent::new_with_tool_allowlist(config.clone(), plan.allowed_tools).await {
@@ -338,11 +372,18 @@ impl SubAgentRunner {
             };
 
         let prompt = sub_agent_user_prompt(&request);
-        let sink = NoopTraceSink;
-        match agent
-            .handle_user_input_with_trace_result(prompt, &sink)
-            .await
-        {
+        let result = if let Some(sink) = &child_sink {
+            agent
+                .handle_user_input_with_trace_result(prompt, sink)
+                .await
+        } else {
+            let sink = NoopTraceSink;
+            agent
+                .handle_user_input_with_trace_result(prompt, &sink)
+                .await
+        };
+
+        match result {
             Ok(final_answer) => SubAgentResult::succeeded(
                 final_answer,
                 plan.child_task_id,
@@ -381,6 +422,84 @@ struct NoopTraceSink;
 
 impl TraceSink for NoopTraceSink {
     fn emit(&self, _event_type: TraceEventType, _payload: serde_json::Value) {}
+}
+
+fn create_child_trace_sink(
+    plan: &SubAgentRunPlan,
+    trace_context: &ToolExecutionTraceContext,
+) -> ParentLinkedTraceSink {
+    let child_client_message_id = trace_id("msg_sub");
+    trace_context.parent_trace.store.create_task_with_id(
+        plan.child_task_id.clone(),
+        plan.child_conversation_id.clone(),
+        child_client_message_id,
+    );
+    let inner = TraceStoreSink::new(
+        Arc::clone(&trace_context.parent_trace.store),
+        plan.child_task_id.clone(),
+    );
+
+    ParentLinkedTraceSink::new(
+        inner,
+        SubAgentParentTrace {
+            parent_task_id: trace_context.parent_trace.task_id.clone(),
+            tool_call_id: trace_context.tool_call_id.clone(),
+            parent_model_output_id: trace_context.parent_model_output_id.clone(),
+        },
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubAgentParentTrace {
+    parent_task_id: String,
+    tool_call_id: String,
+    parent_model_output_id: String,
+}
+
+struct ParentLinkedTraceSink {
+    inner: TraceStoreSink,
+    parent: SubAgentParentTrace,
+}
+
+impl ParentLinkedTraceSink {
+    fn new(inner: TraceStoreSink, parent: SubAgentParentTrace) -> Self {
+        Self { inner, parent }
+    }
+}
+
+impl TraceSink for ParentLinkedTraceSink {
+    fn emit(&self, event_type: TraceEventType, payload: Value) {
+        let payload = if event_type == TraceEventType::TaskStarted {
+            payload_with_parent_trace(payload, &self.parent)
+        } else {
+            payload
+        };
+
+        self.inner.emit(event_type, payload);
+    }
+
+    fn context(&self) -> Option<crate::trace::TraceSinkContext> {
+        self.inner.context()
+    }
+}
+
+fn payload_with_parent_trace(mut payload: Value, parent: &SubAgentParentTrace) -> Value {
+    let parent_payload = json!({
+        "task_id": parent.parent_task_id,
+        "tool_call_id": parent.tool_call_id,
+        "parent_model_output_id": parent.parent_model_output_id,
+    });
+
+    match &mut payload {
+        Value::Object(map) => {
+            map.insert("parent".into(), parent_payload);
+            payload
+        }
+        _ => json!({
+            "payload": payload,
+            "parent": parent_payload,
+        }),
+    }
 }
 
 fn run_sub_agent_task_tool() -> ToolDef {
@@ -475,4 +594,70 @@ fn summarize_for_parent(final_answer: &str) -> String {
     }
 
     trimmed.chars().take(MAX_SUMMARY_CHARS).collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::{
+        trace::{TraceEventType, TraceSinkContext},
+        trace_store::TraceStore,
+    };
+
+    use super::*;
+
+    #[test]
+    fn parent_linked_trace_sink_adds_parent_metadata_to_child_task_started() {
+        let store = Arc::new(TraceStore::new());
+        let plan = SubAgentRunPlan {
+            task: "Read local files".into(),
+            context_pack: "Root: /tmp/project".into(),
+            expected_output: "Return findings".into(),
+            allowed_tools: Vec::new(),
+            max_tool_rounds: 1,
+            child_task_id: "task_sub_fixed".into(),
+            child_conversation_id: "conv_sub_fixed".into(),
+        };
+        let trace_context = ToolExecutionTraceContext {
+            parent_trace: TraceSinkContext {
+                store: Arc::clone(&store),
+                task_id: "task_parent".into(),
+            },
+            tool_call_id: "call_sub".into(),
+            parent_model_output_id: "output_parent".into(),
+        };
+        let sink = create_child_trace_sink(&plan, &trace_context);
+
+        assert_eq!(
+            store.snapshot("task_sub_fixed").unwrap().conversation_id,
+            "conv_sub_fixed"
+        );
+
+        sink.emit(
+            TraceEventType::TaskStarted,
+            json!({
+                "message": {
+                    "role": "user",
+                    "content": "child prompt"
+                }
+            }),
+        );
+
+        let snapshot = store.snapshot("task_sub_fixed").unwrap();
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].event_type, TraceEventType::TaskStarted);
+        assert_eq!(
+            snapshot.events[0].payload["parent"]["task_id"],
+            "task_parent"
+        );
+        assert_eq!(
+            snapshot.events[0].payload["parent"]["tool_call_id"],
+            "call_sub"
+        );
+        assert_eq!(
+            snapshot.events[0].payload["parent"]["parent_model_output_id"],
+            "output_parent"
+        );
+    }
 }

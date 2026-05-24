@@ -302,6 +302,8 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
         arguments: event.payload.arguments,
         output: null,
         error: null,
+        childTaskId: null,
+        childConversationId: null,
       }
       const node = createNode({
         id: event.payload.node_id,
@@ -357,7 +359,14 @@ export function applyTraceEvent(state: TraceState, event: TraceEvent): TraceStat
           completedAt: event.timestamp,
           durationMs: event.payload.duration_ms,
           subtitle: snapshotSummary(event.payload.output),
-          detail: { ...node.detail, output: event.payload.output, error: null },
+          detail: {
+            ...node.detail,
+            output: event.payload.output,
+            error: null,
+            childTaskId: event.payload.child_task_id ?? node.detail.childTaskId ?? null,
+            childConversationId:
+              event.payload.child_conversation_id ?? node.detail.childConversationId ?? null,
+          },
         }
       }, { latestRunningNodeId: null })
 

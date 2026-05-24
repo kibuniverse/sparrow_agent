@@ -68,6 +68,8 @@ export interface ToolCallDetail {
   arguments: JsonSnapshot
   output: JsonSnapshot | null
   error: string | null
+  childTaskId: string | null
+  childConversationId: string | null
 }
 
 export interface JsonSnapshot {
@@ -128,6 +130,11 @@ export interface TaskStartedPayload {
   message: {
     role: 'user'
     content: string
+  }
+  parent?: {
+    task_id: string
+    tool_call_id: string
+    parent_model_output_id: string
   }
 }
 
@@ -209,6 +216,14 @@ export interface ToolCallCompletedPayload {
   node_id: string
   duration_ms: number
   output: JsonSnapshot
+  output_metadata?: {
+    original_chars: number
+    injected_chars: number
+    truncated: boolean
+    artifact_path: string | null
+  }
+  child_task_id?: string
+  child_conversation_id?: string
 }
 
 export interface ToolCallFailedPayload {

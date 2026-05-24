@@ -11,6 +11,7 @@ interface TaskDetailPageProps {
   state: TraceState
   onApplySnapshot: (snapshot: TaskSnapshot) => void
   onBack: () => void
+  onOpenTask: (taskId: string) => void
   onSelectNode: (nodeId: string) => void
 }
 
@@ -19,6 +20,7 @@ export function TaskDetailPage({
   state,
   onApplySnapshot,
   onBack,
+  onOpenTask,
   onSelectNode,
 }: TaskDetailPageProps) {
   const [isLoading, setIsLoading] = useState(true)
@@ -97,7 +99,11 @@ export function TaskDetailPage({
 
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <TraceTimeline onSelectNode={onSelectNode} state={state} />
-          <TraceDetailPanel className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto" node={selectedNode} />
+          <TraceDetailPanel
+            className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
+            node={selectedNode}
+            onOpenTask={onOpenTask}
+          />
         </div>
       </div>
     </main>

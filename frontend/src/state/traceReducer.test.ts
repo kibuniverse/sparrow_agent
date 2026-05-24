@@ -255,6 +255,78 @@ describe('traceReducer', () => {
     expect(state.nodesById.output_2.subtitle).toBe('Final answer')
   })
 
+  it('stores child task metadata from completed sub-agent tool calls', () => {
+    const state = applyTraceSnapshot(createInitialTraceState(), {
+      task_id: 'task_parent',
+      conversation_id: 'conv_parent',
+      status: 'running',
+      created_at: '2026-05-10T01:00:00.000Z',
+      updated_at: '2026-05-10T01:00:04.000Z',
+      events: [
+        {
+          seq: 1,
+          task_id: 'task_parent',
+          conversation_id: 'conv_parent',
+          timestamp: '2026-05-10T01:00:01.000Z',
+          type: 'model_call.started',
+          payload: {
+            node_id: 'model_parent',
+            round: 1,
+            model: 'deepseek-chat',
+            request: jsonSnapshot({}),
+          },
+        },
+        {
+          seq: 2,
+          task_id: 'task_parent',
+          conversation_id: 'conv_parent',
+          timestamp: '2026-05-10T01:00:02.000Z',
+          type: 'model_output.started',
+          payload: {
+            node_id: 'output_parent',
+            parent_model_call_id: 'model_parent',
+            kind: 'tool_calls',
+          },
+        },
+        {
+          seq: 3,
+          task_id: 'task_parent',
+          conversation_id: 'conv_parent',
+          timestamp: '2026-05-10T01:00:03.000Z',
+          type: 'tool_call.started',
+          payload: {
+            node_id: 'tool_sub_agent',
+            parent_model_output_id: 'output_parent',
+            index: 0,
+            tool_call_id: 'call_sub_agent',
+            name: 'runSubAgentTask',
+            arguments: jsonSnapshot({ task: 'Inspect auth module' }),
+          },
+        },
+        {
+          seq: 4,
+          task_id: 'task_parent',
+          conversation_id: 'conv_parent',
+          timestamp: '2026-05-10T01:00:04.000Z',
+          type: 'tool_call.completed',
+          payload: {
+            node_id: 'tool_sub_agent',
+            duration_ms: 1234,
+            output: jsonSnapshot({ status: 'succeeded', summary: 'done' }),
+            child_task_id: 'task_sub_123',
+            child_conversation_id: 'conv_sub_123',
+          },
+        },
+      ],
+    })
+
+    expect(state.nodesById.tool_sub_agent.detail).toMatchObject({
+      type: 'tool_call',
+      childTaskId: 'task_sub_123',
+      childConversationId: 'conv_sub_123',
+    })
+  })
+
   it('marks a running final answer output as succeeded when the task completes', () => {
     const state = applyTraceSnapshot(createInitialTraceState(), {
       task_id: 'task_final',
