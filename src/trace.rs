@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::trace_store::TraceStore;
 
 pub const DEFAULT_SNAPSHOT_MAX_BYTES: usize = 64 * 1024;
 
@@ -101,6 +105,16 @@ pub enum TaskStatus {
 
 pub trait TraceSink: Send + Sync {
     fn emit(&self, event_type: TraceEventType, payload: Value);
+
+    fn context(&self) -> Option<TraceSinkContext> {
+        None
+    }
+}
+
+#[derive(Clone)]
+pub struct TraceSinkContext {
+    pub store: Arc<TraceStore>,
+    pub task_id: String,
 }
 
 pub fn redact_json_value(value: &mut Value) {

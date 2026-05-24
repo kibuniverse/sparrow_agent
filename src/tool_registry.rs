@@ -1,16 +1,14 @@
-use std::time::Instant;
+use std::{collections::HashSet, time::Instant};
 
 use anyhow::Result;
 use futures_util::future::join_all;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::{
     api::{ToolCall, ToolDef},
     debug_log,
-    tool_provider::ToolProvider,
-    tool_result_processor::{
-        ProcessedToolResult, ToolResultInput, ToolResultMetadata, ToolResultProcessor,
-    },
+    tool_provider::{ToolExecutionTraceContext, ToolProvider},
+    tool_result_processor::{ToolResultInput, ToolResultMetadata, ToolResultProcessor},
     trace::{DEFAULT_SNAPSHOT_MAX_BYTES, JsonSnapshot, TraceEventType, TraceSink, trace_id},
 };
 
@@ -18,6 +16,7 @@ pub struct ToolRegistry {
     providers: Vec<Box<dyn ToolProvider>>,
     definitions: Vec<ToolDef>,
     result_processor: ToolResultProcessor,
+    allowed_tool_names: Option<HashSet<String>>,
 }
 
 impl ToolRegistry {
@@ -30,18 +29,34 @@ impl ToolRegistry {
             providers: Vec::new(),
             definitions: Vec::new(),
             result_processor,
+            allowed_tool_names: None,
         }
     }
 
     pub fn add_provider(&mut self, provider: Box<dyn ToolProvider>) {
         debug_log!("Adding tool provider: {}", provider.id());
+        let allowed_tool_names = self.allowed_tool_names.as_ref();
         self.definitions
-            .extend(provider.definitions().iter().cloned());
+            .extend(provider.definitions().iter().filter_map(|definition| {
+                allowed_tool_names
+                    .is_none_or(|allowed| allowed.contains(&definition.function.name))
+                    .then_some(definition.clone())
+            }));
         self.providers.push(provider);
     }
 
     pub fn definitions(&self) -> &[ToolDef] {
         &self.definitions
+    }
+
+    pub fn restrict_to_allowed_tools(
+        &mut self,
+        allowed_tool_names: impl IntoIterator<Item = String>,
+    ) {
+        let allowed_tool_names = allowed_tool_names.into_iter().collect::<HashSet<_>>();
+        self.definitions
+            .retain(|definition| allowed_tool_names.contains(&definition.function.name));
+        self.allowed_tool_names = Some(allowed_tool_names);
     }
 
     pub async fn execute_all(&self, tool_calls: &[ToolCall]) -> Vec<ToolExecutionResult> {
@@ -53,15 +68,15 @@ impl ToolRegistry {
                 tool_call.function.arguments,
             );
             let (content, metadata) = match self.execute_and_process(tool_call).await {
-                Ok(processed) => {
+                Ok(record) => {
                     debug_log!(
                         "Tool '{}' succeeded, original chars: {}, injected chars: {}, truncated: {}",
                         tool_call.function.name,
-                        processed.metadata.original_chars,
-                        processed.metadata.injected_chars,
-                        processed.metadata.truncated,
+                        record.metadata.original_chars,
+                        record.metadata.injected_chars,
+                        record.metadata.truncated,
                     );
-                    (processed.content, processed.metadata)
+                    (record.content, record.metadata)
                 }
                 Err(error) => {
                     debug_log!("Tool '{}' failed: {error}", tool_call.function.name);
@@ -94,6 +109,7 @@ impl ToolRegistry {
         parent_model_output_id: &str,
         sink: &dyn TraceSink,
     ) -> Vec<ToolExecutionResult> {
+        let sink_context = sink.context();
         let started_calls = tool_calls
             .iter()
             .enumerate()
@@ -116,14 +132,23 @@ impl ToolRegistry {
                     }),
                 );
 
-                (node_id, started, tool_call)
+                let trace_context =
+                    sink_context
+                        .as_ref()
+                        .map(|parent_trace| ToolExecutionTraceContext {
+                            parent_trace: parent_trace.clone(),
+                            parent_model_output_id: parent_model_output_id.to_string(),
+                            tool_call_id: tool_call.id.clone(),
+                        });
+
+                (node_id, started, tool_call, trace_context)
             })
             .collect::<Vec<_>>();
 
         join_all(
             started_calls
                 .into_iter()
-                .map(|(node_id, started, tool_call)| async move {
+                .map(|(node_id, started, tool_call, trace_context)| async move {
                     debug_log!(
                         "Executing traced tool: name={}, id={}, args={}",
                         tool_call.function.name,
@@ -131,14 +156,15 @@ impl ToolRegistry {
                         tool_call.function.arguments,
                     );
 
-                    let (content, metadata) = match self.execute_and_process(tool_call).await {
-                        Ok(processed) => {
+                    let (content, metadata) = match self
+                        .execute_and_process_traced(tool_call, trace_context.as_ref())
+                        .await
+                    {
+                        Ok(record) => {
                             let duration_ms = started.elapsed().as_millis() as u64;
-                            let output = JsonSnapshot::from_text(
-                                &processed.content,
-                                DEFAULT_SNAPSHOT_MAX_BYTES,
-                            );
-                            let metadata = processed.metadata;
+                            let output =
+                                JsonSnapshot::from_text(&record.content, DEFAULT_SNAPSHOT_MAX_BYTES);
+                            let metadata = record.metadata;
                             debug_log!(
                                 "Traced tool '{}' succeeded, original chars: {}, injected chars: {}, truncated: {}",
                                 tool_call.function.name,
@@ -148,14 +174,15 @@ impl ToolRegistry {
                             );
                             sink.emit(
                                 TraceEventType::ToolCallCompleted,
-                                json!({
-                                    "node_id": node_id,
-                                    "duration_ms": duration_ms,
-                                    "output": output,
-                                    "output_metadata": tool_result_metadata_json(&metadata),
-                                }),
+                                tool_call_completed_payload(
+                                    &node_id,
+                                    duration_ms,
+                                    output,
+                                    &metadata,
+                                    record.child_trace.as_ref(),
+                                ),
                             );
-                            (processed.content, metadata)
+                            (record.content, metadata)
                         }
                         Err(error) => {
                             let duration_ms = started.elapsed().as_millis() as u64;
@@ -196,16 +223,47 @@ impl ToolRegistry {
         .await
     }
 
-    async fn execute_and_process(&self, tool_call: &ToolCall) -> Result<ProcessedToolResult> {
+    async fn execute_and_process(&self, tool_call: &ToolCall) -> Result<ToolExecutionRecord> {
         let content = self.execute(tool_call).await?;
-        self.result_processor.process(ToolResultInput {
+        self.process_tool_content(tool_call, content)
+    }
+
+    async fn execute_and_process_traced(
+        &self,
+        tool_call: &ToolCall,
+        trace_context: Option<&ToolExecutionTraceContext>,
+    ) -> Result<ToolExecutionRecord> {
+        let content = self.execute_traced(tool_call, trace_context).await?;
+        self.process_tool_content(tool_call, content)
+    }
+
+    fn process_tool_content(
+        &self,
+        tool_call: &ToolCall,
+        content: String,
+    ) -> Result<ToolExecutionRecord> {
+        let child_trace = child_trace_metadata_from_content(&content);
+        let processed = self.result_processor.process(ToolResultInput {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.function.name.clone(),
             content,
+        })?;
+
+        Ok(ToolExecutionRecord {
+            content: processed.content,
+            metadata: processed.metadata,
+            child_trace,
         })
     }
 
     async fn execute(&self, tool_call: &ToolCall) -> Result<String> {
+        if !self.tool_is_allowed(&tool_call.function.name) {
+            anyhow::bail!(
+                "tool '{}' is not allowed in this agent context",
+                tool_call.function.name
+            );
+        }
+
         for provider in &self.providers {
             if let Some(result) = provider.execute(tool_call).await? {
                 return Ok(result);
@@ -213,12 +271,98 @@ impl ToolRegistry {
         }
         anyhow::bail!("unknown tool: {}", tool_call.function.name);
     }
+
+    async fn execute_traced(
+        &self,
+        tool_call: &ToolCall,
+        trace_context: Option<&ToolExecutionTraceContext>,
+    ) -> Result<String> {
+        if !self.tool_is_allowed(&tool_call.function.name) {
+            anyhow::bail!(
+                "tool '{}' is not allowed in this agent context",
+                tool_call.function.name
+            );
+        }
+
+        for provider in &self.providers {
+            if let Some(result) = provider.execute_traced(tool_call, trace_context).await? {
+                return Ok(result);
+            }
+        }
+        anyhow::bail!("unknown tool: {}", tool_call.function.name);
+    }
+
+    fn tool_is_allowed(&self, tool_name: &str) -> bool {
+        self.allowed_tool_names
+            .as_ref()
+            .is_none_or(|allowed| allowed.contains(tool_name))
+    }
 }
 
 pub struct ToolExecutionResult {
     pub tool_call_id: String,
     pub content: String,
     pub metadata: ToolResultMetadata,
+}
+
+struct ToolExecutionRecord {
+    content: String,
+    metadata: ToolResultMetadata,
+    child_trace: Option<ToolChildTraceMetadata>,
+}
+
+struct ToolChildTraceMetadata {
+    child_task_id: String,
+    child_conversation_id: Option<String>,
+}
+
+fn tool_call_completed_payload(
+    node_id: &str,
+    duration_ms: u64,
+    output: JsonSnapshot,
+    metadata: &ToolResultMetadata,
+    child_trace: Option<&ToolChildTraceMetadata>,
+) -> Value {
+    let mut payload = json!({
+        "node_id": node_id,
+        "duration_ms": duration_ms,
+        "output": output,
+        "output_metadata": tool_result_metadata_json(metadata),
+    });
+
+    if let (Some(child_trace), Value::Object(map)) = (child_trace, &mut payload) {
+        map.insert(
+            "child_task_id".into(),
+            Value::String(child_trace.child_task_id.clone()),
+        );
+        if let Some(child_conversation_id) = &child_trace.child_conversation_id {
+            map.insert(
+                "child_conversation_id".into(),
+                Value::String(child_conversation_id.clone()),
+            );
+        }
+    }
+
+    payload
+}
+
+fn child_trace_metadata_from_content(content: &str) -> Option<ToolChildTraceMetadata> {
+    let value = serde_json::from_str::<Value>(content).ok()?;
+    let child_task_id = value
+        .get("child_task_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?
+        .to_string();
+    let child_conversation_id = value
+        .get("child_conversation_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string);
+
+    Some(ToolChildTraceMetadata {
+        child_task_id,
+        child_conversation_id,
+    })
 }
 
 fn tool_result_metadata_json(metadata: &ToolResultMetadata) -> serde_json::Value {
@@ -260,6 +404,10 @@ mod tests {
     struct LargeOutputProvider {
         definitions: Vec<ToolDef>,
         content: String,
+    }
+
+    struct ChildMetadataProvider {
+        definitions: Vec<ToolDef>,
     }
 
     #[async_trait::async_trait]
@@ -313,6 +461,27 @@ mod tests {
         async fn execute(&self, tool_call: &ToolCall) -> Result<Option<String>> {
             if tool_call.function.name == "largeTool" {
                 return Ok(Some(self.content.clone()));
+            }
+            Ok(None)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ToolProvider for ChildMetadataProvider {
+        fn id(&self) -> &str {
+            "child-metadata"
+        }
+
+        fn definitions(&self) -> &[ToolDef] {
+            &self.definitions
+        }
+
+        async fn execute(&self, tool_call: &ToolCall) -> Result<Option<String>> {
+            if tool_call.function.name == "runSubAgentTask" {
+                return Ok(Some(
+                    r#"{"status":"succeeded","final_answer":"done","summary":"done","child_task_id":"task_sub_123","child_conversation_id":"conv_sub_123","artifact_refs":[],"usage":{},"warnings":[]}"#
+                        .into(),
+                ));
             }
             Ok(None)
         }
@@ -419,6 +588,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn traced_execution_emits_child_task_metadata_for_sub_agent_results() {
+        let mut registry = ToolRegistry::new();
+        registry.add_provider(Box::new(ChildMetadataProvider {
+            definitions: vec![ToolDef::function("runSubAgentTask", "Run child task")],
+        }));
+        let sink = RecordingSink::default();
+
+        let results = registry
+            .execute_all_traced(
+                &[tool_call("call_sub", "runSubAgentTask")],
+                "output_1",
+                &sink,
+            )
+            .await;
+
+        assert_eq!(results.len(), 1);
+        let events = sink.events.lock().unwrap();
+        let completed = events
+            .iter()
+            .find(|event| event.0 == TraceEventType::ToolCallCompleted)
+            .unwrap();
+        assert_eq!(completed.1["child_task_id"], "task_sub_123");
+        assert_eq!(completed.1["child_conversation_id"], "conv_sub_123");
+    }
+
+    #[tokio::test]
     async fn traced_execution_emits_failed_event_for_unknown_tool() {
         let registry = ToolRegistry::new();
         let sink = RecordingSink::default();
@@ -437,6 +632,22 @@ mod tests {
                 .unwrap()
                 .contains("unknown tool")
         );
+    }
+
+    #[tokio::test]
+    async fn restricted_registry_rejects_hidden_tool_execution() {
+        let mut registry = ToolRegistry::new();
+        registry.add_provider(Box::new(StaticProvider {
+            definitions: vec![ToolDef::function("knownTool", "Known tool")],
+        }));
+        registry.restrict_to_allowed_tools(Vec::new());
+
+        let results = registry
+            .execute_all(&[tool_call("call_1", "knownTool")])
+            .await;
+
+        assert!(results[0].content.contains("not allowed"));
+        assert!(registry.definitions().is_empty());
     }
 
     #[tokio::test]

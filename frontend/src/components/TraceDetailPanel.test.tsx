@@ -2,8 +2,8 @@
  * @vitest-environment jsdom
  */
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TraceDetailPanel } from './TraceDetailPanel'
 import type { TraceNode } from '../types/trace'
 
@@ -115,5 +115,42 @@ describe('TraceDetailPanel', () => {
     expect(screen.getByText('该 trace 未包含详细 messages')).toBeInTheDocument()
     expect(screen.getByText('暂无输出')).toBeInTheDocument()
     expect(screen.getByText(/"message_count": 2/)).toBeInTheDocument()
+  })
+
+  it('renders a child task action for completed sub-agent tool calls', () => {
+    const onOpenTask = vi.fn()
+    const node: TraceNode = {
+      id: 'tool_sub_agent',
+      taskId: 'task_parent',
+      parentId: 'output_parent',
+      type: 'tool_call',
+      status: 'succeeded',
+      title: '工具调用 1：runSubAgentTask',
+      subtitle: 'done',
+      round: null,
+      startedAt: '2026-05-15T00:00:00.000Z',
+      completedAt: '2026-05-15T00:00:02.000Z',
+      durationMs: 2000,
+      childrenIds: [],
+      detail: {
+        type: 'tool_call',
+        toolCallId: 'call_sub_agent',
+        name: 'runSubAgentTask',
+        arguments: snapshot({ task: 'Inspect auth module' }),
+        output: snapshot({ status: 'succeeded', summary: 'done' }),
+        error: null,
+        childTaskId: 'task_sub_123',
+        childConversationId: 'conv_sub_123',
+      },
+    }
+
+    render(<TraceDetailPanel node={node} onOpenTask={onOpenTask} />)
+
+    expect(screen.getByText('子任务')).toBeInTheDocument()
+    expect(screen.getByText('task_sub_123')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '打开子任务 task_sub_123' }))
+
+    expect(onOpenTask).toHaveBeenCalledWith('task_sub_123')
   })
 })

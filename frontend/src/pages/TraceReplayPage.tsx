@@ -11,9 +11,10 @@ import type { TraceArchive, TraceEvent } from '../types/trace'
 interface TraceReplayPageProps {
   fileName: string
   onBack: () => void
+  onOpenTask: (taskId: string) => void
 }
 
-export function TraceReplayPage({ fileName, onBack }: TraceReplayPageProps) {
+export function TraceReplayPage({ fileName, onBack, onOpenTask }: TraceReplayPageProps) {
   const [archive, setArchive] = useState<TraceArchive | null>(null)
   const [state, setState] = useState<TraceState>(() => createInitialTraceState())
   const [error, setError] = useState<string | null>(null)
@@ -82,7 +83,11 @@ export function TraceReplayPage({ fileName, onBack }: TraceReplayPageProps) {
         {error ? <div className="mt-4 rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
           <TraceTimeline onSelectNode={(nodeId) => setState((current) => ({ ...current, selectedNodeId: nodeId }))} state={state} />
-          <TraceDetailPanel className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto" node={selectedNode} />
+          <TraceDetailPanel
+            className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
+            node={selectedNode}
+            onOpenTask={onOpenTask}
+          />
         </div>
       </div>
     </main>

@@ -25,6 +25,15 @@ const DEFAULT_BASH_MAX_COMMAND_CHARS: usize = 8_192;
 const DEFAULT_BASH_STREAM_MAX_BYTES: usize = 8 * 1024;
 const DEFAULT_BASH_APPROVAL_POLICY_TTL_DAYS: u64 = 90;
 const DEFAULT_BASH_MODEL_LOW_RISK_THRESHOLD: f32 = 0.85;
+const DEFAULT_SUB_AGENT_MAX_DEPTH: usize = 1;
+const DEFAULT_SUB_AGENT_MAX_CONCURRENT: usize = 3;
+const DEFAULT_SUB_AGENT_MAX_TOOL_ROUNDS: usize = 8;
+const DEFAULT_SUB_AGENT_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_SUB_AGENT_ALLOWED_TOOLS: &[&str] = &[
+    "webSearch",
+    "mcp__filesystem__read_file",
+    "mcp__filesystem__search_files",
+];
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -39,6 +48,7 @@ pub struct AppConfig {
     pub tool_results: ToolResultConfig,
     pub streaming: StreamingConfig,
     pub bash: BashConfig,
+    pub sub_agent: SubAgentConfig,
 }
 
 impl AppConfig {
@@ -97,6 +107,7 @@ impl AppConfig {
             tool_results: ToolResultConfig::from_env(),
             streaming: StreamingConfig::from_env(),
             bash: BashConfig::from_env(),
+            sub_agent: SubAgentConfig::from_env(),
         })
     }
 
@@ -118,11 +129,13 @@ impl AppConfig {
             tool_results: ToolResultConfig::from_env(),
             streaming: StreamingConfig::from_env(),
             bash: BashConfig::from_env(),
+            sub_agent: SubAgentConfig::from_env(),
         })
     }
 
     pub fn without_interactive_tools(mut self) -> Self {
         self.bash.enabled = false;
+        self.sub_agent.inherit_bash = false;
         self
     }
 }
@@ -566,6 +579,75 @@ impl ToolResultConfig {
             max_injected_chars,
             output_dir,
         }
+    }
+}
+
+// ── Sub-agent config ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubAgentConfig {
+    pub enabled: bool,
+    pub max_depth: usize,
+    pub max_concurrent: usize,
+    pub max_tool_rounds: usize,
+    pub timeout_ms: u64,
+    pub allowed_tools: Vec<String>,
+    pub inherit_filesystem: bool,
+    pub inherit_bash: bool,
+}
+
+impl Default for SubAgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_depth: DEFAULT_SUB_AGENT_MAX_DEPTH,
+            max_concurrent: DEFAULT_SUB_AGENT_MAX_CONCURRENT,
+            max_tool_rounds: DEFAULT_SUB_AGENT_MAX_TOOL_ROUNDS,
+            timeout_ms: DEFAULT_SUB_AGENT_TIMEOUT_MS,
+            allowed_tools: DEFAULT_SUB_AGENT_ALLOWED_TOOLS
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect(),
+            inherit_filesystem: true,
+            inherit_bash: false,
+        }
+    }
+}
+
+impl SubAgentConfig {
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+
+        config.enabled = read_env_value("SPARROW_SUB_AGENT_ENABLED")
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(config.enabled);
+        config.max_depth = read_env_value("SPARROW_SUB_AGENT_MAX_DEPTH")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(config.max_depth);
+        config.max_concurrent = read_env_value("SPARROW_SUB_AGENT_MAX_CONCURRENT")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(config.max_concurrent);
+        config.max_tool_rounds = read_env_value("SPARROW_SUB_AGENT_MAX_TOOL_ROUNDS")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(config.max_tool_rounds);
+        config.timeout_ms = read_env_value("SPARROW_SUB_AGENT_TIMEOUT_MS")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(config.timeout_ms);
+        config.allowed_tools = read_env_value("SPARROW_SUB_AGENT_ALLOWED_TOOLS")
+            .map(|value| split_csv(&value))
+            .filter(|values| !values.is_empty())
+            .unwrap_or(config.allowed_tools);
+        config.inherit_filesystem = read_env_value("SPARROW_SUB_AGENT_INHERIT_FILESYSTEM")
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(config.inherit_filesystem);
+        config.inherit_bash = read_env_value("SPARROW_SUB_AGENT_INHERIT_BASH")
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(config.inherit_bash);
+
+        config
     }
 }
 

@@ -130,7 +130,58 @@ const events: TraceEvent[] = [
       node_id: 'tool_1',
       duration_ms: 42,
       output: snapshot({ bytes: 120 }),
+      child_task_id: 'task_sub_123',
+      child_conversation_id: 'conv_sub_123',
     },
+  },
+]
+
+const childEvents: TraceEvent[] = [
+  {
+    seq: 1,
+    task_id: 'task_sub_123',
+    conversation_id: 'conv_sub_123',
+    timestamp: '2026-05-10T01:01:00.000Z',
+    type: 'model_call.started',
+    payload: {
+      node_id: 'child_model_1',
+      round: 1,
+      model: 'deepseek-chat',
+      request: snapshot({ messages: 1 }),
+    },
+  },
+  {
+    seq: 2,
+    task_id: 'task_sub_123',
+    conversation_id: 'conv_sub_123',
+    timestamp: '2026-05-10T01:01:01.000Z',
+    type: 'model_output.started',
+    payload: {
+      node_id: 'child_output_1',
+      parent_model_call_id: 'child_model_1',
+      kind: 'final_answer',
+    },
+  },
+  {
+    seq: 3,
+    task_id: 'task_sub_123',
+    conversation_id: 'conv_sub_123',
+    timestamp: '2026-05-10T01:01:02.000Z',
+    type: 'model_output.completed',
+    payload: {
+      node_id: 'child_output_1',
+      kind: 'final_answer',
+      content: 'child trace done',
+      tool_calls: [],
+    },
+  },
+  {
+    seq: 4,
+    task_id: 'task_sub_123',
+    conversation_id: 'conv_sub_123',
+    timestamp: '2026-05-10T01:01:03.000Z',
+    type: 'task.completed',
+    payload: { duration_ms: 3000, final_answer: 'child trace done' },
   },
 ]
 
@@ -217,6 +268,10 @@ describe('App trace visualization', () => {
 
     expect(screen.getByRole('heading', { name: '工具调用 1：read_file' })).toBeInTheDocument()
     expect(screen.getByText(/"bytes": 120/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '打开子任务 task_sub_123' }))
+
+    expect(await screen.findAllByText('child trace done')).not.toHaveLength(0)
   })
 
   it('streams a CLI-created task from a direct browser link', async () => {
@@ -270,6 +325,18 @@ async function mockFetch(input: string | URL | Request, init?: RequestInit): Pro
       created_at: '2026-05-10T01:00:00.000Z',
       updated_at: '2026-05-10T01:00:06.000Z',
       events,
+    }
+    return jsonResponse(response, 200)
+  }
+
+  if (url === '/api/agent/tasks/task_sub_123') {
+    const response: TaskSnapshot = {
+      task_id: 'task_sub_123',
+      conversation_id: 'conv_sub_123',
+      status: 'succeeded',
+      created_at: '2026-05-10T01:01:00.000Z',
+      updated_at: '2026-05-10T01:01:03.000Z',
+      events: childEvents,
     }
     return jsonResponse(response, 200)
   }

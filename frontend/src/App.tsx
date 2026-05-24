@@ -51,6 +51,10 @@ function App() {
   }, [])
 
   const activeTaskId = route.name === 'task' ? route.taskId : traceState.taskId
+  const openTask = useCallback((taskId: string) => {
+    setTraceState(createInitialTraceState())
+    navigateTo(`/tasks/${encodeURIComponent(taskId)}`)
+  }, [])
 
   useTaskStream({
     taskId: activeTaskId,
@@ -86,6 +90,7 @@ function App() {
         fileName={route.fileName}
         onApplyArchive={applyArchive}
         onBack={() => navigateTo('/')}
+        onOpenTask={openTask}
         onReplay={(fileName) => navigateTo(`/replay/${encodeURIComponent(fileName)}`)}
         onSelectNode={selectNode}
         state={traceState}
@@ -94,7 +99,13 @@ function App() {
   }
 
   if (route.name === 'replay') {
-    return <TraceReplayPage fileName={route.fileName} onBack={() => navigateTo('/')} />
+    return (
+      <TraceReplayPage
+        fileName={route.fileName}
+        onBack={() => navigateTo('/')}
+        onOpenTask={openTask}
+      />
+    )
   }
 
   if (route.name === 'task') {
@@ -102,6 +113,7 @@ function App() {
       <TaskDetailPage
         onApplySnapshot={applySnapshot}
         onBack={() => navigateTo('/')}
+        onOpenTask={openTask}
         onSelectNode={selectNode}
         state={traceState}
         taskId={route.taskId}
