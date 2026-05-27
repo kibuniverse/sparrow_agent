@@ -6,6 +6,7 @@ import { ChatPage, type ChatMessage } from './pages/ChatPage'
 import { TaskDetailPage } from './pages/TaskDetailPage'
 import { TraceArchivePage } from './pages/TraceArchivePage'
 import { TraceReplayPage } from './pages/TraceReplayPage'
+import { TraceUploadPage } from './pages/TraceUploadPage'
 import { navigateTo, useRoute } from './router'
 import {
   applyTraceEvent,
@@ -83,6 +84,15 @@ function App() {
     },
     [conversationId],
   )
+
+  if (route.name === 'upload') {
+    return (
+      <TraceUploadPage
+        onBack={() => navigateTo('/')}
+        onOpenTask={openTask}
+      />
+    )
+  }
 
   if (route.name === 'trace-file') {
     return (
