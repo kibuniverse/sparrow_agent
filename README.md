@@ -1,6 +1,6 @@
 # Sparrow Agent
 
-Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行、可显式启用的 Bash 命令工具，以及基于 MCP filesystem server 的受控文件系统工具。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
+Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行、可显式启用的 Bash 命令工具、基于 MCP filesystem server 的受控文件系统工具，以及子 Agent 隔离任务委派。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
 
 ## 功能特性
 
@@ -8,12 +8,15 @@ Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSee
 - **流式输出**：默认启用 DeepSeek SSE 流式调用，可在 CLI 展示 reasoning 与最终回答，在 Server 模式转成结构化 trace。
 - **工具调用循环**：模型可连续请求工具，工具结果会回填到消息历史后继续请求模型。
 - **并行工具执行**：同一轮模型返回的多个工具调用会并发执行，并在 trace 中独立记录开始、完成和失败事件。
-- **可插拔工具提供者**：本地工具和 MCP 工具统一实现 `ToolProvider`，由 `ToolRegistry` 汇总定义并分发调用。
+- **可插拔工具提供者**：本地工具、MCP 工具和子 Agent 工具统一实现 `ToolProvider`，由 `ToolRegistry` 汇总定义并分发调用。
 - **Web 搜索**：内置 `webSearch`，通过 Tavily API 返回答案、摘要和来源链接。
 - **Rust WASM 沙盒执行**：内置 `runRustWasm`，将模型生成的 Rust 代码编译到 `wasm32-unknown-unknown` 并用 wasmtime 隔离执行。
-- **Bash 命令工具**：内置 `runBashCommand`，默认关闭；仅 CLI Agent 可用，启用后使用智能审批自动放行低风险命令，高风险命令仍会确认或拦截，并限制 cwd、超时、输出和环境变量。
+- **Bash 命令工具**：内置 `runBashCommand`，默认启用；仅 CLI Agent 可用，使用智能审批自动放行低风险命令，高风险命令仍会确认或拦截，并限制 cwd、超时、输出和环境变量。
+- **子 Agent 任务委派**：内置 `runSubAgentTask`，可在隔离的消息上下文中运行子任务。子 Agent 继承父 Agent 的配置但限制工具集、轮数和深度，结果会结构化返回给父 Agent。
 - **MCP 文件系统工具**：默认尝试通过 `npx @modelcontextprotocol/server-filesystem` 接入文件系统工具，支持 roots、只读/读写模式、写入确认和敏感路径 denylist。
+- **工具结果后处理**：超过阈值的工具输出会被截断并保存完整内容到本地文件（`.sparrow_agent/tool_outputs`），注入模型的摘要中包含文件路径和截断提示。
 - **Agent 调用可视化**：HTTP API + SSE 会推送 task、model call、model output、tool call 等结构化事件，前端可实时展示调用树和详情。
+- **Trace 归档与压缩**：CLI 观察模式每轮任务完成后写入 `.sparrow-trace.json` 归档文件，支持 V2 压缩格式（事件合并、请求快照 diff/keyframe 编码），可通过前端回放。
 - **安全配置管理**：API 密钥可交互式初始化并保存到本地配置文件，也可由环境变量覆盖。
 
 ## 快速开始
@@ -132,6 +135,8 @@ pnpm dev
 - 任务详情页加载 task snapshot；
 - 通过 SSE 实时合并 trace 事件；
 - 将模型调用、模型输出和工具调用归并为可选中的调用树；
+- 支持子 Agent 任务的嵌套 trace 展示；
+- Trace 归档文件直接预览（`/trace-files/`）和按事件回放（`/replay/`）；
 - EventSource 断线后会按 1s、2s、5s、10s 退避重连，并使用 `after_seq` 续传。
 
 ## HTTP API
@@ -142,6 +147,7 @@ pnpm dev
 | `POST /api/agent/tasks` | 创建流式 Agent 任务，目前仅支持 `stream: true` |
 | `GET /api/agent/tasks/:task_id` | 获取任务快照和历史 trace |
 | `GET /api/agent/tasks/:task_id/events?after_seq=0` | 订阅 trace SSE 事件，先 replay 历史事件，再推送 live 事件 |
+| `GET /api/agent/trace-files/:file_name` | 读取已保存的 trace 归档文件（仅 CLI 观察模式提供） |
 
 创建任务请求：
 
@@ -184,21 +190,32 @@ pnpm dev
 | `SPARROW_BASH_ENV_ALLOWLIST` | Bash 工具传入子进程的环境变量 allowlist，逗号分隔；名称包含 key/token/secret/password/authorization 的变量仍会被过滤 | `PATH,HOME,USER,TERM,TMPDIR` |
 | `SPARROW_FILESYSTEM_ENABLED` | 是否启用 MCP 文件系统工具 | `true` |
 | `SPARROW_FILESYSTEM_ROOTS` | 允许访问的根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
-| `SPARROW_FILESYSTEM_MODE` | 文件系统模式：`read-only` 或 `read-write` | `read-only` |
+| `SPARROW_FILESYSTEM_MODE` | 文件系统模式：`read-only` 或 `read-write` | `read-write` |
 | `SPARROW_FILESYSTEM_CONFIRM` | 确认策略：`never`、`writes`、`always` | `writes` |
+| `SPARROW_TOOL_RESULT_MAX_CHARS` | 工具输出注入模型的最大字符数，超出部分截断并保存到文件 | `20000` |
+| `SPARROW_TOOL_OUTPUT_DIR` | 工具输出完整内容保存目录 | `.sparrow_agent/tool_outputs` |
 | `SPARROW_MCP_FILESYSTEM_COMMAND` | MCP filesystem server 启动命令 | `npx` |
-| `SPARROW_MCP_FILESYSTEM_ARGS` | MCP filesystem server 参数，JSON 字符串数组 | `["-y","@modelcontextprotocol/server-filesystem","/Users/yankaizhi/RustProjects/sparrow_agent"]` |
+| `SPARROW_MCP_FILESYSTEM_ARGS` | MCP filesystem server 参数，JSON 字符串数组 | `["-y","@modelcontextprotocol/server-filesystem","<当前目录>"]` |
+| `SPARROW_SUB_AGENT_ENABLED` | 是否启用子 Agent 工具 `runSubAgentTask` | `true` |
+| `SPARROW_SUB_AGENT_MAX_DEPTH` | 子 Agent 最大递归深度（每层减 1） | `1` |
+| `SPARROW_SUB_AGENT_MAX_CONCURRENT` | 同一轮最大并发子 Agent 数 | `3` |
+| `SPARROW_SUB_AGENT_MAX_TOOL_ROUNDS` | 每个子 Agent 最大工具调用轮数 | `8` |
+| `SPARROW_SUB_AGENT_TIMEOUT_MS` | 每个子 Agent 超时毫秒数 | `120000` |
+| `SPARROW_SUB_AGENT_ALLOWED_TOOLS` | 子 Agent 默认允许使用的工具列表，逗号分隔 | `webSearch,mcp__filesystem__read_file,mcp__filesystem__search_files` |
+| `SPARROW_SUB_AGENT_INHERIT_FILESYSTEM` | 子 Agent 是否继承父 Agent 的文件系统工具 | `true` |
+| `SPARROW_SUB_AGENT_INHERIT_BASH` | 子 Agent 是否继承父 Agent 的 Bash 工具 | `false` |
 
 ### 默认运行参数
 
 | 配置项 | 默认值 |
 |--------|--------|
 | 模型 | `deepseek-v4-pro` |
-| 系统提示词 | `You are a helpful assistant.` |
+| 系统提示词 | `You are a helpful assistant.` + 运行时文件系统上下文（当前工作目录和可执行文件路径） |
 | 推理强度 | `high` |
 | 最大工具调用轮数 | `100` |
 | 文件系统最大读取字节数 | `262144` |
 | 文件系统最大写入字节数 | `262144` |
+| 工具输出最大注入字符数 | `20000` |
 
 ### 配置文件
 
@@ -231,22 +248,40 @@ CLI / React Frontend
                          |
                          v
                    ToolRegistry
-                  /            \
-                 v              v
-        LocalToolProvider   McpToolProvider
-          |        |       |      |
-          v        v       v      v
-     webSearch  runRustWasm runBashCommand MCP filesystem tools
+                  /        |        \
+                 v         v         v
+        LocalToolProvider  SubAgentToolProvider  McpToolProvider
+          |        |              |                   |
+          v        v              v                   v
+     webSearch  runRustWasm  runBashCommand      MCP filesystem tools
+                            runSubAgentTask
 ```
 
 核心流程：
 
-1. `main.rs` 加载 `AppConfig`，根据是否传入 `--server` 启动 CLI 或 Axum Server。
+1. `main.rs` 加载 `AppConfig`，根据是否传入 `--server` 或 `--inspect` 启动 CLI REPL、CLI 浏览器观察模式或 Axum Server。
 2. `Agent` 维护 `ChatMessage` 历史，构造 DeepSeek Chat Completion 请求，并开启 thinking/reasoning 配置。
 3. `DeepSeekClient` 负责普通请求和 SSE 流式请求；流式响应由 `StreamAccumulator` 归并为完整 assistant message。
 4. 如果 assistant message 包含工具调用，`ToolRegistry` 将调用分发给对应 provider，并行执行同一轮工具。
-5. 工具结果作为 `tool` message 追加回历史，Agent 进入下一轮模型请求，直到返回最终文本或达到最大轮数。
+5. 工具结果经过 `ToolResultProcessor` 截断处理（超出阈值的内容保存到本地文件并注入截断提示）后，作为 `tool` message 追加回历史，Agent 进入下一轮模型请求，直到返回最终文本或达到最大轮数。
 6. Server 模式下，`TraceStoreSink` 把关键阶段写入内存 `TraceStore`，前端通过 snapshot 和 SSE 消费这些事件。
+7. CLI 观察模式下，每轮任务完成后通过 `trace_file` 模块写入压缩的 `.sparrow-trace.json` 归档文件。
+
+## 子 Agent 系统
+
+`runSubAgentTask` 工具允许父 Agent 将独立子任务委派给隔离的子 Agent 执行。子 Agent 收到明确的 task、context_pack 和 expected_output 后独立运行，父 Agent 仅收到结构化的最终结果。
+
+核心特性：
+
+- **隔离上下文**：子 Agent 拥有独立的消息历史和系统提示词，不依赖父 Agent 的对话上下文；
+- **工具限制**：默认仅允许 `webSearch`、`mcp__filesystem__read_file`、`mcp__filesystem__search_files`，可通过 `allowed_tools` 参数按需缩小；
+- **递归深度控制**：默认最大深度为 1（子 Agent 不能再创建孙 Agent），每层递减；
+- **并发限制**：同一轮最多同时运行 3 个子 Agent，超出等待信号量释放；
+- **超时保护**：每个子 Agent 默认 120 秒超时，超时后返回 timeout 状态；
+- **结构化结果**：返回 `SubAgentResult`，包含 `status`（succeeded/failed/timeout/rejected）、`final_answer`、`summary`、`child_task_id` 和 `warnings`；
+- **Trace 集成**：子 Agent 的 trace 事件会关联到父 Agent 的 trace 树中，前端可通过 `child_task_id` 导航到子任务详情。
+
+子 Agent 失败不会导致父 Agent 任务失败——父 Agent 会收到 failed 状态的 `SubAgentResult` 并可据此决定后续策略。
 
 ## Trace 事件模型
 
@@ -263,16 +298,23 @@ CLI / React Frontend
 
 `TraceStore` 默认每个任务最多保留 10,000 个事件，超过限制会将任务标记为 failed。
 
+### Trace 归档与压缩
+
+CLI 观察模式每轮任务完成后会将 trace 序列化为 `.sparrow-trace.json` 归档文件。归档采用 V2 压缩格式：
+
+- **事件合并（Event Run）**：连续的 `reasoning_delta`、`model_output.delta` 和 `tool_call.delta` 事件会被合并为单条事件，记录起止 seq 和合并数量；
+- **请求快照编码**：模型的 `request` 快照仅保存完整 keyframe 每 8 次，中间使用 delta frame（基于 hash 校验的 `retain_prefix`/`append`/`replace_range` 操作）；
+- **SHA-256 完整性校验**：所有快照编码使用 SHA-256 哈希校验，delta frame 会验证 base hash 和目标 hash。
+
 ## 已内置工具
 
 | 工具名 | Provider | 说明 |
 |--------|----------|------|
 | `webSearch` | local | 使用 Tavily 搜索网页，最多返回 5 条结果和 Tavily answer |
 | `runRustWasm` | local | 编译并执行定义了 `pub fn run() -> String` 的 Rust 代码 |
-| `runBashCommand` | local | 显式启用后在 CLI 中执行单条非交互 Bash 命令，返回结构化 stdout/stderr/exit code/timeout 信息 |
+| `runBashCommand` | local | 默认启用在 CLI 中执行单条非交互 Bash 命令，返回结构化 stdout/stderr/exit code/timeout 信息 |
+| `runSubAgentTask` | sub-agent | 在隔离消息上下文中运行独立子任务，仅使用显式提供的上下文，返回结构化结果 |
 | `mcp__filesystem__*` | MCP | 来自 `@modelcontextprotocol/server-filesystem` 的文件系统工具，具体列表由 MCP server 动态发现 |
-
-`src/tools.rs` 中仍保留了演示用 `get_weather` 函数，但当前 `LocalToolProvider` 没有注册 `getWeather` 工具。
 
 ## WASM 沙盒
 
@@ -295,13 +337,13 @@ pub fn run() -> String {
 
 ## Bash 命令工具安全边界
 
-`runBashCommand` 默认关闭，需要显式启用：
+`runBashCommand` 默认启用，仅在 CLI Agent 中暴露。Server 模式和浏览器观察模式中的 HTTP API 会移除交互式工具；在 `--inspect` 模式下，终端里的 CLI Agent 可以使用 Bash 工具，但旁路的浏览器 API 不会暴露它。
+
+可通过以下方式关闭：
 
 ```bash
-SPARROW_BASH_ENABLED=true cargo run
+SPARROW_BASH_ENABLED=false cargo run
 ```
-
-该工具只在 CLI Agent 中暴露。Server 模式和浏览器观察模式中的 HTTP API 会移除交互式工具；在 `--inspect` 模式下，终端里的 CLI Agent 可以使用 Bash 工具，但旁路的浏览器 API 不会暴露它。
 
 安全措施：
 
@@ -318,14 +360,14 @@ SPARROW_BASH_ENABLED=true cargo run
 - 子进程默认清空环境，仅传入 allowlist 中的变量，且变量名包含 key、token、secret、password、authorization 的项总会被过滤；
 - 低风险策略缓存保存在可读 JSON 文件中，默认路径为 `~/.sparrow_agent/bash_approval_policies.json`，Unix 权限为 `0600`，可手动删除或编辑来撤销策略。
 
-注意：这是一个受控的本地命令执行工具，不是强 OS 沙盒。cwd root 校验用于约束工作目录，不能阻止命令显式访问系统上的其他绝对路径；因此工具默认关闭，本地 hard rules 会在策略缓存命中后重新运行。
+注意：这是一个受控的本地命令执行工具，不是强 OS 沙盒。cwd root 校验用于约束工作目录，不能阻止命令显式访问系统上的其他绝对路径；因此本地 hard rules 会在策略缓存命中后重新运行。
 
 ## MCP 文件系统安全边界
 
-文件系统工具默认启用，但默认模式是 `read-only`，写入类工具不会暴露给模型。切换到读写模式：
+文件系统工具默认启用，默认模式是 `read-write`，写入类工具默认需要用户确认。切换到只读模式：
 
 ```bash
-SPARROW_FILESYSTEM_MODE=read-write cargo run
+SPARROW_FILESYSTEM_MODE=read-only cargo run
 ```
 
 安全措施：
@@ -340,9 +382,9 @@ SPARROW_FILESYSTEM_MODE=read-write cargo run
 
 | 路径 | 说明 |
 |------|------|
-| `src/main.rs` | 二进制入口，加载配置，启动 CLI REPL 或 Server |
+| `src/main.rs` | 二进制入口，加载配置，启动 CLI REPL、CLI 观察模式或 Server |
 | `src/lib.rs` | 库入口，导出项目模块 |
-| `src/config.rs` | 应用配置、API key 初始化、filesystem/MCP/streaming 环境变量 |
+| `src/config.rs` | 应用配置、API key 初始化、所有环境变量解析和子 Agent/tool result 配置 |
 | `src/agent.rs` | Agent 编排器，维护消息历史、模型请求、工具循环、trace 转发 |
 | `src/client.rs` | DeepSeek HTTP/SSE 客户端 |
 | `src/api.rs` | DeepSeek Chat Completion 请求、响应和工具调用数据结构 |
@@ -352,19 +394,24 @@ SPARROW_FILESYSTEM_MODE=read-write cargo run
 | `src/bash_approval_gate.rs` | Bash 智能审批编排，本地规则、策略缓存、模型灰区分类和审批摘要 |
 | `src/bash_model_classifier.rs` | DeepSeek 灰区 Bash 风险分类封装 |
 | `src/streaming.rs` | 流式响应累积器和 Agent stream event 抽象 |
-| `src/tool_provider.rs` | 工具 provider trait |
-| `src/tool_registry.rs` | 工具定义汇总、调用分发、并行执行和 traced execution |
-| `src/local_tools.rs` | 本地工具 provider，注册 `webSearch`、`runRustWasm` 和可选 `runBashCommand` |
+| `src/tool_provider.rs` | 工具 provider trait，含 `execute` 和 `execute_traced` 接口 |
+| `src/tool_registry.rs` | 工具定义汇总、调用分发、并行执行、traced execution 和工具结果后处理 |
+| `src/local_tools.rs` | 本地工具 provider，注册 `webSearch`、`runRustWasm` 和 `runBashCommand` |
 | `src/tools.rs` | Tavily 搜索和 WASM 工具入口 |
 | `src/rust_wasm_runner.rs` | Rust 到 WASM 的编译与 wasmtime 沙盒运行 |
+| `src/sub_agent.rs` | 子 Agent 工具 provider、协调器、运行器和结构化结果模型 |
+| `src/tool_result_processor.rs` | 工具输出截断、完整内容保存和截断提示注入 |
 | `src/mcp/` | MCP stdio transport、JSON-RPC protocol、client 和 filesystem provider |
-| `src/server.rs` | Axum HTTP API、SSE、CORS 和任务创建逻辑 |
+| `src/server.rs` | Axum HTTP API、SSE、CORS、trace 文件读取和任务创建逻辑 |
 | `src/conversation_store.rs` | Server 模式下按 conversation 复用 Agent，并限制同会话并发任务 |
 | `src/trace.rs` | Trace 事件类型、JSON 快照、截断和敏感字段脱敏 |
-| `src/trace_store.rs` | 内存 task/event 存储、seq 管理、snapshot 和 broadcast |
+| `src/trace_store.rs` | 内存 task/event 存储、seq 管理、snapshot、broadcast 和 TraceStoreSink |
+| `src/trace_compaction.rs` | Trace 归档 V2 压缩：事件合并、请求快照 diff/keyframe 编码和 SHA-256 校验 |
+| `src/trace_file.rs` | Trace 归档文件读写，支持 V1/V2 格式自动识别和展开 |
+| `src/cli_observer.rs` | CLI 浏览器观察模式，启动内嵌 HTTP server + 浏览器任务 URL |
 | `src/console.rs` | CLI 输入、密钥输入和流式渲染 |
 | `src/debug.rs` | 调试日志开关 |
-| `frontend/src/` | React 前端，包含聊天页、任务详情页、trace reducer 和 SSE hook |
+| `frontend/src/` | React 前端，包含聊天页、任务详情页、trace 归档页、trace 回放页、trace reducer 和 SSE hook |
 | `tests/` | Server、Trace 和 TraceStore 的契约测试 |
 | `docs/` | 功能设计方案和历史实施计划 |
 
