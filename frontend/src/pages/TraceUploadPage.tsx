@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { LoadingInline } from '../components/LoadingInline'
 import { TraceDetailPanel } from '../components/TraceDetailPanel'
 import { TraceReplayControls } from '../components/TraceReplayControls'
 import { TraceTimeline } from '../components/TraceTimeline'
