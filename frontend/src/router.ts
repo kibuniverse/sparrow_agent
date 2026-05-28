@@ -5,6 +5,7 @@ export type AppRoute =
   | { name: 'task'; taskId: string }
   | { name: 'trace-file'; fileName: string }
   | { name: 'replay'; fileName: string }
+  | { name: 'upload' }
 
 export function useRoute(): AppRoute {
   const [route, setRoute] = useState(readRoute)
@@ -37,6 +38,10 @@ function readRoute(): AppRoute {
   const taskMatch = window.location.pathname.match(/^\/tasks\/([^/]+)$/)
   if (taskMatch?.[1]) {
     return { name: 'task', taskId: decodeURIComponent(taskMatch[1]) }
+  }
+
+  if (window.location.pathname === '/upload') {
+    return { name: 'upload' }
   }
 
   return { name: 'chat' }

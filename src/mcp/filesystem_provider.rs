@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 use globset::GlobSet;
 use serde_json::Value;
-use tokio::sync::Mutex;
 
 use crate::{
     api::{ToolCall, ToolDef},
@@ -21,9 +21,11 @@ pub struct McpToolProvider {
     server_id: String,
     definitions: Vec<ToolDef>,
     tool_map: HashMap<String, String>, // mcp__{id}__{tool} -> original tool name
-    client: Mutex<McpClient>,
+    client: tokio::sync::Mutex<McpClient>,
     config: FilesystemConfig,
     deny_glob: GlobSet,
+    /// 用户在当前会话中已经批准过写入操作，后续写入不再确认
+    write_approved: Mutex<bool>,
 }
 
 impl McpToolProvider {
@@ -73,9 +75,10 @@ impl McpToolProvider {
             server_id,
             definitions,
             tool_map,
-            client: Mutex::new(locked_client),
+            client: tokio::sync::Mutex::new(locked_client),
             config,
             deny_glob,
+            write_approved: Mutex::new(false),
         })
     }
 }
@@ -115,9 +118,9 @@ impl ToolProvider for McpToolProvider {
             );
         }
 
-        // Confirmation for write tools
+        // Confirmation for write tools (skip if already approved in this session)
         if self.config.confirm.should_confirm(is_write) {
-            let confirmed = prompt_confirmation(&original_name, &arguments)?;
+            let confirmed = self.prompt_confirmation(&original_name, &arguments)?;
             if !confirmed {
                 return Ok(Some("Tool execution denied by user".into()));
             }
@@ -218,8 +221,8 @@ impl McpToolProvider {
 
         let dry_result = client.call_tool(tool_name, dry_args).await?;
 
-        // Step 2: Show diff to user
-        let confirmed = prompt_edit_confirmation(&dry_result)?;
+        // Step 2: Show diff to user (skip if already approved in this session)
+        let confirmed = self.prompt_edit_confirmation(&dry_result)?;
         if !confirmed {
             return Ok("Tool execution denied by user".into());
         }
@@ -238,42 +241,70 @@ fn is_write_tool(name: &str) -> bool {
     WRITE_TOOL_NAMES.contains(&name)
 }
 
-fn prompt_confirmation(tool_name: &str, arguments: &Value) -> Result<bool> {
-    let path = arguments
-        .get("path")
-        .or_else(|| arguments.get("source"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+impl McpToolProvider {
+    /// 询问用户确认写入操作。如果本次会话已批准过，则自动跳过。
+    fn prompt_confirmation(&self, tool_name: &str, arguments: &Value) -> Result<bool> {
+        // 已经批准过则直接放行
+        if *self.write_approved.lock().unwrap() {
+            return Ok(true);
+        }
 
-    println!("Sparrow wants to call filesystem tool:");
-    println!("  tool: {tool_name}");
-    println!("  path: {path}");
-    println!("  mode: write");
-    println!();
-    print!("Approve? [y/N] ");
+        let path = arguments
+            .get("path")
+            .or_else(|| arguments.get("source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
 
-    use std::io::{self, Write};
-    io::stdout().flush()?;
+        println!("Sparrow wants to call filesystem tool:");
+        println!("  tool: {tool_name}");
+        println!("  path: {path}");
+        println!("  mode: write");
+        println!();
+        print!("Approve? [y/N] ");
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let answer = input.trim().to_lowercase();
+        use std::io::{self, Write};
+        io::stdout().flush()?;
 
-    Ok(answer == "y" || answer == "yes")
-}
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        let approved = answer == "y" || answer == "yes";
 
-fn prompt_edit_confirmation(dry_run_result: &str) -> Result<bool> {
-    println!("Preview:");
-    println!("{dry_run_result}");
-    println!();
-    print!("Apply changes? [y/N] ");
+        // 批准后记录状态，本次会话不再重复询问
+        if approved {
+            *self.write_approved.lock().unwrap() = true;
+            println!("(Write operations are now auto-approved for the rest of this session)");
+        }
 
-    use std::io::{self, Write};
-    io::stdout().flush()?;
+        Ok(approved)
+    }
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let answer = input.trim().to_lowercase();
+    /// 询问用户确认 edit_file 的变更。如果本次会话已批准过，则自动跳过。
+    fn prompt_edit_confirmation(&self, dry_run_result: &str) -> Result<bool> {
+        // 已经批准过则直接放行
+        if *self.write_approved.lock().unwrap() {
+            return Ok(true);
+        }
 
-    Ok(answer == "y" || answer == "yes")
+        println!("Preview:");
+        println!("{dry_run_result}");
+        println!();
+        print!("Apply changes? [y/N] ");
+
+        use std::io::{self, Write};
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let answer = input.trim().to_lowercase();
+        let approved = answer == "y" || answer == "yes";
+
+        // 批准后记录状态，本次会话不再重复询问
+        if approved {
+            *self.write_approved.lock().unwrap() = true;
+            println!("(Write operations are now auto-approved for the rest of this session)");
+        }
+
+        Ok(approved)
+    }
 }

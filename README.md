@@ -374,8 +374,8 @@ SPARROW_FILESYSTEM_MODE=read-only cargo run
 
 - 只允许访问 `SPARROW_FILESYSTEM_ROOTS` 内的路径；
 - 默认拒绝 `.git/**`、`.env`、`.env.*`、私钥、证书、`.sparrow_agent/**` 等敏感路径；
-- `read-write` 模式下写入工具默认需要用户确认；
-- `edit_file` 会先执行 dry run，展示 diff 后再次确认才会应用；
+- `read-write` 模式下写入工具默认需要用户确认；用户首次批准后，同一会话内后续写入操作自动放行，不再重复询问；
+- `edit_file` 会先执行 dry run，展示 diff 后再次确认才会应用（同样受会话级批准缓存控制）；
 - MCP 工具名会命名空间化为 `mcp__{server_id}__{tool_name}`，避免和本地工具重名。
 
 ## 模块结构
