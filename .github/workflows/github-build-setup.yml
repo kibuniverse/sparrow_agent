@@ -1,0 +1,17 @@
+- name: Set up pnpm
+  uses: pnpm/action-setup@v4
+  with:
+    version: 10.6.3
+
+- name: Set up Node.js
+  uses: actions/setup-node@v4
+  with:
+    node-version: 24
+    cache: pnpm
+    cache-dependency-path: frontend/pnpm-lock.yaml
+
+- name: Install frontend dependencies
+  run: pnpm --dir frontend install --frozen-lockfile
+
+- name: Build embedded frontend
+  run: pnpm --dir frontend build

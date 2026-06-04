@@ -10,6 +10,7 @@ use sparrow_agent::{
         AppConfig, BashConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode,
         StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
+    frontend_assets::EmbeddedAsset,
     server::{ServerState, build_router},
     trace::TraceEventType,
     trace_store::{TaskSnapshot, TraceStore},
@@ -150,6 +151,82 @@ async fn browser_router_falls_back_for_task_deep_links() {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(body.contains("Sparrow Inspector"));
+}
+
+#[tokio::test]
+async fn browser_router_uses_embedded_frontend_when_dist_is_missing() {
+    static ASSETS: &[EmbeddedAsset] = &[
+        EmbeddedAsset {
+            path: "index.html",
+            bytes: b"<!doctype html><title>Embedded Sparrow Inspector</title>",
+            mime: "text/html; charset=utf-8",
+        },
+        EmbeddedAsset {
+            path: "assets/app.js",
+            bytes: b"console.log('embedded inspector')",
+            mime: "text/javascript; charset=utf-8",
+        },
+    ];
+
+    let frontend = tempfile::tempdir().unwrap();
+    let trace_dir = tempfile::tempdir().unwrap();
+    let app = sparrow_agent::server::build_browser_router_with_assets(
+        ServerState::new(test_config(), Arc::new(TraceStore::new())),
+        frontend.path().to_path_buf(),
+        trace_dir.path().to_path_buf(),
+        ASSETS,
+    );
+
+    let index_response = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(index_response.status(), StatusCode::OK);
+    let bytes = to_bytes(index_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains("Embedded Sparrow Inspector"));
+
+    let deep_link_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/tasks/task_123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deep_link_response.status(), StatusCode::OK);
+    let bytes = to_bytes(deep_link_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains("Embedded Sparrow Inspector"));
+
+    let asset_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset_response.status(), StatusCode::OK);
+    assert_eq!(
+        asset_response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap(),
+        "text/javascript; charset=utf-8"
+    );
+    let bytes = to_bytes(asset_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), b"console.log('embedded inspector')");
 }
 
 #[tokio::test]

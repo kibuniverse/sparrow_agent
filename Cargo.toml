@@ -2,6 +2,11 @@
 name = "sparrow_agent"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/kibuniverse/sparrow_agent"
+
+[workspace]
+members = ["."]
+resolver = "3"
 
 [dependencies]
 anyhow = "1.0.102"
@@ -26,3 +31,7 @@ ulid = "1"
 unicode-width = "0.2"
 url = "2"
 wasmtime = "30"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
