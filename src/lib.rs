@@ -11,6 +11,7 @@ pub mod config;
 pub mod console;
 pub mod conversation_store;
 pub mod debug;
+pub mod frontend_assets;
 pub mod local_tools;
 pub mod mcp;
 pub mod rust_wasm_runner;

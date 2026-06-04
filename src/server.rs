@@ -3,10 +3,11 @@ use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc, time::
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{StatusCode, Uri, header::CONTENT_TYPE},
     response::{
-        IntoResponse,
+        IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
@@ -20,6 +21,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::{
     config::AppConfig,
     conversation_store::ConversationStore,
+    frontend_assets::{EmbeddedAsset, embedded_frontend_assets},
     trace::{TaskStatus, TraceEvent, TraceEventType, trace_id},
     trace_store::{TaskSnapshot, TraceStore, TraceStoreSink},
 };
@@ -100,8 +102,17 @@ pub fn build_browser_router_with_trace_dir(
     frontend_dist: PathBuf,
     trace_dir: PathBuf,
 ) -> Router {
+    build_browser_router_with_assets(state, frontend_dist, trace_dir, embedded_frontend_assets())
+}
+
+pub fn build_browser_router_with_assets(
+    state: ServerState,
+    frontend_dist: PathBuf,
+    trace_dir: PathBuf,
+    embedded_assets: &'static [EmbeddedAsset],
+) -> Router {
     let index = frontend_dist.join("index.html");
-    api_routes()
+    let router = api_routes()
         .route("/api/agent/trace-files/{file_name}", get(open_trace_file))
         .layer(
             CorsLayer::new()
@@ -109,8 +120,43 @@ pub fn build_browser_router_with_trace_dir(
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .with_state(state.with_trace_dir(trace_dir))
-        .fallback_service(ServeDir::new(frontend_dist).fallback(ServeFile::new(index)))
+        .with_state(state.with_trace_dir(trace_dir));
+
+    if index.exists() {
+        router.fallback_service(ServeDir::new(frontend_dist).fallback(ServeFile::new(index)))
+    } else {
+        router.fallback(move |uri: Uri| async move {
+            embedded_frontend_response(uri.path(), embedded_assets)
+        })
+    }
+}
+
+fn embedded_frontend_response(path: &str, assets: &'static [EmbeddedAsset]) -> Response {
+    let requested_path = path.trim_start_matches('/');
+    let requested_path = if requested_path.is_empty() {
+        "index.html"
+    } else {
+        requested_path
+    };
+
+    if let Some(asset) = find_embedded_asset(assets, requested_path)
+        .or_else(|| find_embedded_asset(assets, "index.html"))
+    {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, asset.mime)
+            .body(Body::from(asset.bytes.to_vec()))
+            .unwrap();
+    }
+
+    StatusCode::NOT_FOUND.into_response()
+}
+
+fn find_embedded_asset(
+    assets: &'static [EmbeddedAsset],
+    path: &str,
+) -> Option<&'static EmbeddedAsset> {
+    assets.iter().find(|asset| asset.path == path)
 }
 
 pub async fn run_server(config: AppConfig, addr: SocketAddr) -> Result<()> {
