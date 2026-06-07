@@ -1,23 +1,25 @@
+import { useNavigate } from '@tanstack/react-router'
 import { ChatComposer } from '../components/ChatComposer'
 import { ThinkingPreview } from '../components/ThinkingPreview'
-import { navigateTo } from '../router'
-import type { TraceState } from '../state/traceReducer'
+import { useTaskStream } from '../hooks/useTaskStream'
+import { useAppStore } from '../store'
 
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-}
+export function ChatPage() {
+  const navigate = useNavigate()
+  const traceState = useAppStore((s) => s.traceState)
+  const messages = useAppStore((s) => s.messages)
+  const submitMessage = useAppStore((s) => s.submitMessage)
+  const handleTraceEvent = useAppStore((s) => s.handleTraceEvent)
+  const resetTrace = useAppStore((s) => s.resetTrace)
 
-interface ChatPageProps {
-  messages: ChatMessage[]
-  traceState: TraceState
-  onSubmitMessage: (message: string) => Promise<void>
-  onOpenTask: (taskId: string) => void
-}
-
-export function ChatPage({ messages, traceState, onSubmitMessage, onOpenTask }: ChatPageProps) {
   const running = traceState.status === 'running'
+
+  useTaskStream({
+    taskId: traceState.taskId,
+    enabled: running && Boolean(traceState.taskId),
+    lastSeq: traceState.lastSeq,
+    onEvent: handleTraceEvent,
+  })
 
   return (
     <main className="min-h-dvh bg-slate-50">
@@ -28,7 +30,7 @@ export function ChatPage({ messages, traceState, onSubmitMessage, onOpenTask }: 
               <h1 className="text-2xl font-semibold text-slate-950">Agent Trace</h1>
               <button
                 className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
-                onClick={() => navigateTo('/upload')}
+                onClick={() => navigate({ to: '/upload' })}
                 type="button"
               >
                 上传 Trace 文件预览
@@ -50,9 +52,14 @@ export function ChatPage({ messages, traceState, onSubmitMessage, onOpenTask }: 
           )}
         </section>
         <div className="pb-4">
-          <ChatComposer disabled={running} onSubmit={onSubmitMessage} />
+          <ChatComposer disabled={running} onSubmit={submitMessage} />
           <ThinkingPreview
-            onOpenDetail={() => traceState.taskId && onOpenTask(traceState.taskId)}
+            onOpenDetail={() => {
+              if (traceState.taskId) {
+                resetTrace()
+                navigate({ to: '/tasks/$taskId', params: { taskId: traceState.taskId } })
+              }
+            }}
             state={traceState}
           />
         </div>
