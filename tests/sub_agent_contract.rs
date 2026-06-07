@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 use sparrow_agent::{
     api::{FunctionCall, ToolCall},
     config::{
-        AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, FilesystemConfig,
-        FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
+        AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, ContextConfig,
+        FilesystemConfig, FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
     sub_agent::{SubAgentCoordinator, SubAgentRequest, SubAgentToolProvider},
     tool_provider::ToolProvider,
@@ -67,6 +67,7 @@ fn app_config() -> AppConfig {
             env_allowlist: vec!["PATH".into()],
         },
         sub_agent: sub_agent_config(),
+        context: ContextConfig::default(),
     }
 }
 

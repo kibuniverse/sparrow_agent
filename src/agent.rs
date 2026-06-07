@@ -6,10 +6,11 @@ use indicatif::{InMemoryTerm, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde_json::{Value, json};
 
 use crate::{
-    api::{ChatCompletionRequest, ChatMessage, ChoiceMessage, ThinkingConfig, Usage},
+    api::{ChatCompletionRequest, ChoiceMessage, ThinkingConfig, Usage},
     client::DeepSeekClient,
     config::{AppConfig, BashApprovalMode},
     console::ConsoleTraceRenderer,
+    context::{CompileInput, ContextCompileReport, ContextManager},
     debug_log,
     local_tools::LocalToolProvider,
     mcp::{client::McpClient, filesystem_provider::McpToolProvider},
@@ -27,7 +28,7 @@ const DEEPSEEK_V4_CONTEXT_TOKENS: u32 = 1_000_000;
 pub struct Agent {
     client: DeepSeekClient,
     config: AppConfig,
-    messages: Vec<ChatMessage>,
+    context: ContextManager,
     tool_registry: ToolRegistry,
     context_usage: ContextUsage,
 }
@@ -46,7 +47,11 @@ impl Agent {
 
     async fn new_inner(config: AppConfig, tool_allowlist: Option<Vec<String>>) -> Result<Self> {
         let client = DeepSeekClient::new(&config.api_key);
-        let messages = vec![ChatMessage::system(&config.system_prompt)];
+        let context = ContextManager::new(
+            config.system_prompt.clone(),
+            config.model.clone(),
+            config.context.to_policy(),
+        );
         let context_usage = ContextUsage::for_model(&config.model);
 
         let tool_result_processor = ToolResultProcessor::new(ToolResultProcessorConfig {
@@ -146,7 +151,7 @@ impl Agent {
         Ok(Self {
             client,
             config,
-            messages,
+            context,
             tool_registry,
             context_usage,
         })
@@ -157,7 +162,7 @@ impl Agent {
     }
 
     pub async fn handle_user_input(&mut self, input: impl Into<String>) -> Result<()> {
-        self.messages.push(ChatMessage::user(input));
+        self.context.record_user(input.into());
 
         if self.config.streaming.enabled {
             self.run_streaming_loop().await
@@ -189,12 +194,12 @@ impl Agent {
             json!({
                 "message": {
                     "role": "user",
-                    "content": input,
+                    "content": input.clone(),
                 },
             }),
         );
 
-        self.messages.push(ChatMessage::user(input));
+        self.context.record_user(input);
 
         match self.run_streaming_trace_loop(sink).await {
             Ok(final_answer) => {
@@ -225,7 +230,7 @@ impl Agent {
             debug_log!("=== Tool round {round} (non-streaming) ===");
             self.log_messages();
 
-            let request = self.build_request();
+            let (request, _context_report) = self.build_request()?;
             let response = self.client.chat_completion(&request).await?;
             self.context_usage.update_from_usage(&response.usage);
 
@@ -261,7 +266,7 @@ impl Agent {
             debug_log!("=== Tool round {round} (streaming) ===");
             self.log_messages();
 
-            let request = self.build_request();
+            let (request, _context_report) = self.build_request()?;
             let completed = {
                 let stream = self.client.chat_completion_stream(&request);
                 let mut accumulator = StreamAccumulator::new();
@@ -295,18 +300,13 @@ impl Agent {
             debug_log!("=== Tool round {round} (streaming trace) ===");
             self.log_messages();
 
-            let request = self.build_request();
+            let (request, context_report) = self.build_request()?;
             let model_call_id = trace_id("model");
             let started = Instant::now();
 
             sink.emit(
                 TraceEventType::ModelCallStarted,
-                json!({
-                    "node_id": model_call_id,
-                    "round": round + 1,
-                    "model": request.model,
-                    "request": model_request_snapshot(&request),
-                }),
+                model_call_started_payload(&model_call_id, round + 1, &request, &context_report),
             );
 
             let mut forwarder = StreamingTraceForwarder::new(model_call_id.clone(), sink);
@@ -362,8 +362,9 @@ impl Agent {
     }
 
     fn log_messages(&self) {
-        debug_log!("Message count: {}", self.messages.len());
-        for (i, msg) in self.messages.iter().enumerate() {
+        let messages = self.context.audit_messages();
+        debug_log!("Audit message count: {}", messages.len());
+        for (i, msg) in messages.iter().enumerate() {
             let content_str = msg.content.as_deref().unwrap_or("<None>");
             let preview_len = content_str.len().min(80);
             debug_log!(
@@ -376,16 +377,19 @@ impl Agent {
         }
     }
 
-    fn build_request(&self) -> ChatCompletionRequest {
-        ChatCompletionRequest {
+    fn build_request(&mut self) -> Result<(ChatCompletionRequest, ContextCompileReport)> {
+        let compiled = self.context.compile_request(CompileInput)?;
+        let report = compiled.report;
+        let request = ChatCompletionRequest {
             model: self.config.model.clone(),
-            messages: self.messages.clone(),
+            messages: compiled.messages,
             tools: Some(self.tool_registry.definitions().to_vec()),
             thinking: Some(ThinkingConfig::enabled()),
             reasoning_effort: Some(self.config.reasoning_effort.clone()),
             stream: None,
             stream_options: None,
-        }
+        };
+        Ok((request, report))
     }
 
     async fn handle_assistant_message(&mut self, message: &ChoiceMessage) -> TurnStatus {
@@ -399,13 +403,7 @@ impl Agent {
                     .collect::<Vec<_>>(),
             );
 
-            self.messages.push(ChatMessage {
-                role: "assistant".into(),
-                content: Some(String::new()),
-                reasoning_content: message.reasoning_content.clone(),
-                tool_calls: message.tool_calls.clone(),
-                tool_call_id: None,
-            });
+            self.context.record_assistant(message.clone());
 
             let results = self.tool_registry.execute_all(tool_calls).await;
             for result in &results {
@@ -417,8 +415,11 @@ impl Agent {
                 );
             }
             for result in results {
-                self.messages
-                    .push(ChatMessage::tool(result.content, &result.tool_call_id));
+                self.context.record_tool_result(
+                    result.tool_call_id,
+                    result.content,
+                    result.metadata,
+                );
             }
 
             return TurnStatus::Continue;
@@ -428,10 +429,7 @@ impl Agent {
             if !self.config.streaming.enabled && !content.is_empty() {
                 println!("agent> {content}");
             }
-            self.messages.push(ChatMessage::assistant(
-                content,
-                message.reasoning_content.clone(),
-            ));
+            self.context.record_assistant(message.clone());
         }
 
         TurnStatus::Complete
@@ -453,13 +451,7 @@ impl Agent {
                     .collect::<Vec<_>>(),
             );
 
-            self.messages.push(ChatMessage {
-                role: "assistant".into(),
-                content: Some(String::new()),
-                reasoning_content: message.reasoning_content.clone(),
-                tool_calls: message.tool_calls.clone(),
-                tool_call_id: None,
-            });
+            self.context.record_assistant(message.clone());
 
             let results = self
                 .tool_registry
@@ -471,18 +463,18 @@ impl Agent {
                 .await;
 
             for result in results {
-                self.messages
-                    .push(ChatMessage::tool(result.content, &result.tool_call_id));
+                self.context.record_tool_result(
+                    result.tool_call_id,
+                    result.content,
+                    result.metadata,
+                );
             }
 
             return TracedTurnStatus::Continue;
         }
 
         let final_answer = message.content.clone().unwrap_or_default();
-        self.messages.push(ChatMessage::assistant(
-            final_answer.clone(),
-            message.reasoning_content.clone(),
-        ));
+        self.context.record_assistant(message.clone());
 
         TracedTurnStatus::Complete(final_answer)
     }
@@ -719,6 +711,21 @@ fn model_request_snapshot(request: &ChatCompletionRequest) -> JsonSnapshot {
     )
 }
 
+fn model_call_started_payload(
+    model_call_id: &str,
+    round: usize,
+    request: &ChatCompletionRequest,
+    context_report: &ContextCompileReport,
+) -> Value {
+    json!({
+        "node_id": model_call_id,
+        "round": round,
+        "model": request.model,
+        "context": context_report,
+        "request": model_request_snapshot(request),
+    })
+}
+
 fn model_response_snapshot(
     message: &ChoiceMessage,
     finish_reason: Option<&str>,
@@ -839,8 +846,8 @@ fn format_token_count(value: u32) -> String {
 mod tests {
     use super::{
         Agent, ContextUsage, ContextUsageColor, StreamingTraceForwarder, format_token_count,
-        model_context_window_tokens, model_request_snapshot, model_response_snapshot,
-        render_progress_bar,
+        model_call_started_payload, model_context_window_tokens, model_request_snapshot,
+        model_response_snapshot, render_progress_bar,
     };
     use crate::{
         api::{
@@ -848,9 +855,10 @@ mod tests {
             FunctionCall, PromptTokensDetails, ThinkingConfig, ToolCall, Usage,
         },
         config::{
-            AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, FilesystemConfig,
-            FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
+            AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, ContextConfig,
+            FilesystemConfig, FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
         },
+        context::ContextCompileReport,
         streaming::{AgentEventSink, AgentStreamEvent},
         trace::{TraceEventType, TraceSink},
     };
@@ -937,6 +945,40 @@ mod tests {
         assert_eq!(snapshot.value["messages"][1]["content"], "user question");
         assert_eq!(snapshot.value["messages"][2]["tool_call_id"], "call_1");
         assert_eq!(snapshot.value["thinking"], json!({ "type": "enabled" }));
+    }
+
+    #[test]
+    fn model_call_started_payload_includes_context_report() {
+        let request = ChatCompletionRequest {
+            model: "deepseek-v4-pro".into(),
+            messages: vec![ChatMessage::system("system prompt")],
+            tools: None,
+            thinking: Some(ThinkingConfig::enabled()),
+            reasoning_effort: Some("high".into()),
+            stream: None,
+            stream_options: None,
+        };
+        let report = ContextCompileReport {
+            estimated_prompt_tokens: 42,
+            target_prompt_tokens: 600_000,
+            reserved_completion_tokens: 8_192,
+            included_recent_turns: 1,
+            summarized_turns: 2,
+            included_tool_exchanges: 0,
+            summarized_tool_exchanges: 1,
+            reasoning_policy: "preserve".into(),
+            preserved_reasoning_messages: 1,
+            summarized_reasoning_messages: 2,
+            warnings: Vec::new(),
+        };
+
+        let payload = model_call_started_payload("model_1", 4, &request, &report);
+
+        assert_eq!(payload["node_id"], "model_1");
+        assert_eq!(payload["round"], 4);
+        assert_eq!(payload["context"]["estimated_prompt_tokens"], 42);
+        assert_eq!(payload["context"]["summarized_turns"], 2);
+        assert_eq!(payload["request"]["value"]["message_count"], 1);
     }
 
     #[test]
@@ -1142,6 +1184,7 @@ mod tests {
                 env_allowlist: vec!["PATH".into()],
             },
             sub_agent,
+            context: ContextConfig::default(),
         }
     }
 }

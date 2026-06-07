@@ -4,8 +4,8 @@ use serde_json::json;
 use sparrow_agent::{
     api::{FunctionCall, ToolCall},
     config::{
-        AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, FilesystemConfig,
-        FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
+        AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, ContextConfig,
+        FilesystemConfig, FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
     local_tools::LocalToolProvider,
     server::ServerState,
@@ -58,6 +58,7 @@ fn test_app_config(bash: BashConfig) -> AppConfig {
         },
         bash,
         sub_agent: SubAgentConfig::default(),
+        context: ContextConfig::default(),
     }
 }
 
