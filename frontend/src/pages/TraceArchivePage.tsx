@@ -1,39 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { AgentTraceApiError, getTraceArchive } from '../api/agentTrace'
 import { LoadingInline } from '../components/LoadingInline'
 import { TraceDetailPanel } from '../components/TraceDetailPanel'
 import { TraceTimeline } from '../components/TraceTimeline'
+import { useAppStore } from '../store'
 import type { TraceArchive } from '../types/trace'
-import type { TraceState } from '../state/traceReducer'
 
 interface TraceArchivePageProps {
   fileName: string
-  state: TraceState
-  onApplyArchive: (archive: TraceArchive) => void
-  onBack: () => void
-  onOpenTask: (taskId: string) => void
-  onReplay: (fileName: string) => void
-  onSelectNode: (nodeId: string) => void
 }
 
-export function TraceArchivePage({
-  fileName,
-  state,
-  onApplyArchive,
-  onBack,
-  onOpenTask,
-  onReplay,
-  onSelectNode,
-}: TraceArchivePageProps) {
+export function TraceArchivePage({ fileName }: TraceArchivePageProps) {
+  const navigate = useNavigate()
+  const traceState = useAppStore((s) => s.traceState)
+  const applyArchive = useAppStore((s) => s.applyArchive)
+  const selectNode = useAppStore((s) => s.selectNode)
+  const resetTrace = useAppStore((s) => s.resetTrace)
+
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     getTraceArchive(fileName)
-      .then((archive) => {
+      .then((archive: TraceArchive) => {
         if (!cancelled) {
-          onApplyArchive(archive)
+          applyArchive(archive)
         }
       })
       .catch((caught: unknown) => {
@@ -50,22 +43,27 @@ export function TraceArchivePage({
     return () => {
       cancelled = true
     }
-  }, [fileName, onApplyArchive])
+  }, [fileName, applyArchive])
 
   useEffect(() => {
-    if (state.selectedNodeId || state.rootNodeIds.length === 0) {
+    if (traceState.selectedNodeId || traceState.rootNodeIds.length === 0) {
       return
     }
-    const fallback = state.rootNodeIds.at(-1)
+    const fallback = traceState.rootNodeIds.at(-1)
     if (fallback) {
-      onSelectNode(fallback)
+      selectNode(fallback)
     }
-  }, [onSelectNode, state.rootNodeIds, state.selectedNodeId])
+  }, [selectNode, traceState.rootNodeIds, traceState.selectedNodeId])
 
   const selectedNode = useMemo(
-    () => (state.selectedNodeId ? state.nodesById[state.selectedNodeId] ?? null : null),
-    [state.nodesById, state.selectedNodeId],
+    () => (traceState.selectedNodeId ? traceState.nodesById[traceState.selectedNodeId] ?? null : null),
+    [traceState.nodesById, traceState.selectedNodeId],
   )
+
+  const openTask = (taskId: string) => {
+    resetTrace()
+    navigate({ to: '/tasks/$taskId', params: { taskId } })
+  }
 
   return (
     <main className="min-h-dvh bg-slate-50">
@@ -76,10 +74,10 @@ export function TraceArchivePage({
             <p className="mt-1 text-sm text-slate-600">{fileName}</p>
           </div>
           <div className="flex gap-2">
-            <button className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700" onClick={() => onReplay(fileName)} type="button">
+            <button className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700" onClick={() => navigate({ to: '/replay/$fileName', params: { fileName } })} type="button">
               回放
             </button>
-            <button className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700" onClick={onBack} type="button">
+            <button className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700" onClick={() => { resetTrace(); navigate({ to: '/' }) }} type="button">
               返回聊天
             </button>
           </div>
@@ -87,11 +85,11 @@ export function TraceArchivePage({
         {isLoading ? <LoadingInline label="正在加载 trace 文件" /> : null}
         {error ? <div className="rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
-          <TraceTimeline onSelectNode={onSelectNode} state={state} />
+          <TraceTimeline onSelectNode={selectNode} state={traceState} />
           <TraceDetailPanel
             className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
             node={selectedNode}
-            onOpenTask={onOpenTask}
+            onOpenTask={openTask}
           />
         </div>
       </div>
