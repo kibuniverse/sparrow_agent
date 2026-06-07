@@ -3,8 +3,9 @@
  */
 import '@testing-library/jest-dom/vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import App from './App'
+import { routeTree } from './routeTree.gen'
 import type { CreateAgentTaskResponse, TaskSnapshot, TraceEvent } from './types/trace'
 
 class FakeEventSource {
@@ -233,10 +234,21 @@ const archive = {
   },
 }
 
+function renderApp(initialPath = '/') {
+  const history = createMemoryHistory({
+    initialEntries: [`/sparrow_agent${initialPath}`],
+  })
+  const router = createRouter({
+    routeTree,
+    history,
+    basepath: '/sparrow_agent',
+  })
+  return render(<RouterProvider router={router} />)
+}
+
 describe('App trace visualization', () => {
   beforeEach(() => {
     FakeEventSource.instances = []
-    window.history.replaceState(null, '', '/')
     vi.stubGlobal('EventSource', FakeEventSource)
     vi.stubGlobal('fetch', vi.fn(mockFetch))
   })
@@ -247,7 +259,7 @@ describe('App trace visualization', () => {
   })
 
   it('submits a chat task, shows thinking preview, opens detail, and displays tool output', async () => {
-    render(<App />)
+    renderApp('/')
 
     fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '分析仓库' } })
     fireEvent.click(screen.getByRole('button', { name: '发送消息' }))
@@ -261,7 +273,7 @@ describe('App trace visualization', () => {
     expect(await screen.findByText('需要先读取仓库入口。')).toBeInTheDocument()
     expect(screen.getByText('准备调用 1 个工具：read_file')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '查看任务详情' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
 
     expect(await screen.findByRole('heading', { name: '任务详情' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '查看 工具调用 1：read_file' }))
@@ -275,9 +287,7 @@ describe('App trace visualization', () => {
   })
 
   it('streams a CLI-created task from a direct browser link', async () => {
-    window.history.replaceState(null, '', '/tasks/task_cli_1')
-
-    render(<App />)
+    renderApp('/tasks/task_cli_1')
 
     expect(await screen.findByRole('heading', { name: '任务详情' })).toBeInTheDocument()
     await waitFor(() => expect(FakeEventSource.lastUrl()).toBe(
@@ -286,18 +296,14 @@ describe('App trace visualization', () => {
   })
 
   it('opens a generated trace archive in preview mode', async () => {
-    window.history.replaceState(null, '', '/trace-files/task_cli_1.sparrow-trace.json')
-
-    render(<App />)
+    renderApp('/trace-files/task_cli_1.sparrow-trace.json')
 
     expect(await screen.findByRole('heading', { name: 'Trace 预览' })).toBeInTheDocument()
     expect(screen.getByText('task_cli_1.sparrow-trace.json')).toBeInTheDocument()
   })
 
   it('opens a generated trace archive in replay mode', async () => {
-    window.history.replaceState(null, '', '/replay/task_cli_1.sparrow-trace.json')
-
-    render(<App />)
+    renderApp('/replay/task_cli_1.sparrow-trace.json')
 
     expect(await screen.findByRole('heading', { name: 'Trace 回放' })).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: '播放' })).toBeInTheDocument()
