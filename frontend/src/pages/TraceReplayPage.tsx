@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { getTraceArchive } from '../api/agentTrace'
 import { LoadingInline } from '../components/LoadingInline'
 import { TraceDetailPanel } from '../components/TraceDetailPanel'
@@ -6,15 +7,17 @@ import { TraceReplayControls } from '../components/TraceReplayControls'
 import { TraceTimeline } from '../components/TraceTimeline'
 import { useTraceReplay } from '../hooks/useTraceReplay'
 import { applyTraceEvent, createInitialTraceState, type TraceState } from '../state/traceReducer'
+import { useAppStore } from '../store'
 import type { TraceArchive, TraceEvent } from '../types/trace'
 
 interface TraceReplayPageProps {
   fileName: string
-  onBack: () => void
-  onOpenTask: (taskId: string) => void
 }
 
-export function TraceReplayPage({ fileName, onBack, onOpenTask }: TraceReplayPageProps) {
+export function TraceReplayPage({ fileName }: TraceReplayPageProps) {
+  const navigate = useNavigate()
+  const resetTrace = useAppStore((s) => s.resetTrace)
+
   const [archive, setArchive] = useState<TraceArchive | null>(null)
   const [state, setState] = useState<TraceState>(() => createInitialTraceState())
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +60,11 @@ export function TraceReplayPage({ fileName, onBack, onOpenTask }: TraceReplayPag
     [state.nodesById, state.selectedNodeId],
   )
 
+  const openTask = (taskId: string) => {
+    resetTrace()
+    navigate({ to: '/tasks/$taskId', params: { taskId } })
+  }
+
   return (
     <main className="min-h-dvh bg-slate-50">
       <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
@@ -65,7 +73,7 @@ export function TraceReplayPage({ fileName, onBack, onOpenTask }: TraceReplayPag
             <h1 className="text-2xl font-semibold text-slate-950">Trace 回放</h1>
             <p className="mt-1 text-sm text-slate-600">{fileName}</p>
           </div>
-          <button className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700" onClick={onBack} type="button">
+          <button className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700" onClick={() => { resetTrace(); navigate({ to: '/' }) }} type="button">
             返回聊天
           </button>
         </div>
@@ -86,7 +94,7 @@ export function TraceReplayPage({ fileName, onBack, onOpenTask }: TraceReplayPag
           <TraceDetailPanel
             className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
             node={selectedNode}
-            onOpenTask={onOpenTask}
+            onOpenTask={openTask}
           />
         </div>
       </div>
