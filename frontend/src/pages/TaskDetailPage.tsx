@@ -1,28 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { AgentTraceApiError, getTaskSnapshot } from '../api/agentTrace'
 import { LoadingInline } from '../components/LoadingInline'
 import { TraceDetailPanel } from '../components/TraceDetailPanel'
 import { TraceTimeline } from '../components/TraceTimeline'
-import type { TraceState } from '../state/traceReducer'
-import type { TaskSnapshot } from '../types/trace'
+import { useTaskStream } from '../hooks/useTaskStream'
+import { useAppStore } from '../store'
 
 interface TaskDetailPageProps {
   taskId: string
-  state: TraceState
-  onApplySnapshot: (snapshot: TaskSnapshot) => void
-  onBack: () => void
-  onOpenTask: (taskId: string) => void
-  onSelectNode: (nodeId: string) => void
 }
 
-export function TaskDetailPage({
-  taskId,
-  state,
-  onApplySnapshot,
-  onBack,
-  onOpenTask,
-  onSelectNode,
-}: TaskDetailPageProps) {
+export function TaskDetailPage({ taskId }: TaskDetailPageProps) {
+  const navigate = useNavigate()
+  const traceState = useAppStore((s) => s.traceState)
+  const applySnapshot = useAppStore((s) => s.applySnapshot)
+  const selectNode = useAppStore((s) => s.selectNode)
+  const resetTrace = useAppStore((s) => s.resetTrace)
+  const handleTraceEvent = useAppStore((s) => s.handleTraceEvent)
+
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -32,7 +28,7 @@ export function TaskDetailPage({
     getTaskSnapshot(taskId)
       .then((snapshot) => {
         if (!cancelled) {
-          onApplySnapshot(snapshot)
+          applySnapshot(snapshot)
         }
       })
       .catch((caught: unknown) => {
@@ -49,23 +45,35 @@ export function TaskDetailPage({
     return () => {
       cancelled = true
     }
-  }, [onApplySnapshot, taskId])
+  }, [applySnapshot, taskId])
 
   useEffect(() => {
-    if (state.selectedNodeId || state.rootNodeIds.length === 0) {
+    if (traceState.selectedNodeId || traceState.rootNodeIds.length === 0) {
       return
     }
 
-    const fallback = state.latestRunningNodeId ?? state.rootNodeIds.at(-1)
+    const fallback = traceState.latestRunningNodeId ?? traceState.rootNodeIds.at(-1)
     if (fallback) {
-      onSelectNode(fallback)
+      selectNode(fallback)
     }
-  }, [onSelectNode, state.latestRunningNodeId, state.rootNodeIds, state.selectedNodeId])
+  }, [selectNode, traceState.latestRunningNodeId, traceState.rootNodeIds, traceState.selectedNodeId])
+
+  useTaskStream({
+    taskId,
+    enabled: traceState.status === 'running',
+    lastSeq: traceState.lastSeq,
+    onEvent: handleTraceEvent,
+  })
 
   const selectedNode = useMemo(
-    () => (state.selectedNodeId ? state.nodesById[state.selectedNodeId] ?? null : null),
-    [state.nodesById, state.selectedNodeId],
+    () => (traceState.selectedNodeId ? traceState.nodesById[traceState.selectedNodeId] ?? null : null),
+    [traceState.nodesById, traceState.selectedNodeId],
   )
+
+  const openTask = (childTaskId: string) => {
+    resetTrace()
+    navigate({ to: '/tasks/$taskId', params: { taskId: childTaskId } })
+  }
 
   return (
     <main className="min-h-dvh bg-slate-50">
@@ -74,12 +82,15 @@ export function TaskDetailPage({
           <div>
             <h1 className="text-2xl font-semibold text-slate-950">任务详情</h1>
             <p className="mt-1 text-sm text-slate-600">
-              {state.status === 'running' ? 'running' : state.status} · {state.startedAt ?? taskId}
+              {traceState.status === 'running' ? 'running' : traceState.status} · {traceState.startedAt ?? taskId}
             </p>
           </div>
           <button
             className="inline-flex h-9 items-center rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700 transition hover:border-sky-500 hover:text-sky-700"
-            onClick={onBack}
+            onClick={() => {
+              resetTrace()
+              navigate({ to: '/' })
+            }}
             type="button"
           >
             返回聊天
@@ -98,11 +109,11 @@ export function TaskDetailPage({
         ) : null}
 
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
-          <TraceTimeline onSelectNode={onSelectNode} state={state} />
+          <TraceTimeline onSelectNode={selectNode} state={traceState} />
           <TraceDetailPanel
             className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
             node={selectedNode}
-            onOpenTask={onOpenTask}
+            onOpenTask={openTask}
           />
         </div>
       </div>
