@@ -7,7 +7,18 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{console::read_secret_input, tool_result_processor::DEFAULT_TOOL_RESULT_MAX_CHARS};
+use crate::{
+    console::read_secret_input,
+    context::{
+        ContextPolicy, ReasoningRetentionPolicy,
+        budget::{
+            DEFAULT_COMPACTION_TRIGGER_RATIO, DEFAULT_CONTEXT_ENABLED, DEFAULT_MAX_MEMORY_TOKENS,
+            DEFAULT_MAX_SUMMARY_TOKENS, DEFAULT_MAX_TOOL_EXCHANGE_TOKENS, DEFAULT_RECENT_TURNS,
+            DEFAULT_RESERVED_COMPLETION_TOKENS, DEFAULT_TARGET_RATIO,
+        },
+    },
+    tool_result_processor::DEFAULT_TOOL_RESULT_MAX_CHARS,
+};
 
 const DEFAULT_MODEL: &str = "deepseek-v4-pro";
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. when read the file, ignore the build targer files like target dir in rust project, ouptput or dist dir in frontend project.  do not reade the entire project dir tree. read the file in entry file first.";
@@ -49,6 +60,7 @@ pub struct AppConfig {
     pub streaming: StreamingConfig,
     pub bash: BashConfig,
     pub sub_agent: SubAgentConfig,
+    pub context: ContextConfig,
 }
 
 impl AppConfig {
@@ -108,6 +120,7 @@ impl AppConfig {
             streaming: StreamingConfig::from_env(),
             bash: BashConfig::from_env(),
             sub_agent: SubAgentConfig::from_env(),
+            context: ContextConfig::from_env(),
         })
     }
 
@@ -130,6 +143,7 @@ impl AppConfig {
             streaming: StreamingConfig::from_env(),
             bash: BashConfig::from_env(),
             sub_agent: SubAgentConfig::from_env(),
+            context: ContextConfig::from_env(),
         })
     }
 
@@ -578,6 +592,96 @@ impl ToolResultConfig {
         Self {
             max_injected_chars,
             output_dir,
+        }
+    }
+}
+
+// ── Context config ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ContextConfig {
+    pub enabled: bool,
+    pub target_ratio: f32,
+    pub compaction_trigger_ratio: f32,
+    pub reserved_completion_tokens: usize,
+    pub recent_turns: usize,
+    pub max_tool_exchange_tokens: usize,
+    pub max_memory_tokens: usize,
+    pub max_summary_tokens: usize,
+    pub reasoning_policy: ReasoningRetentionPolicy,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_CONTEXT_ENABLED,
+            target_ratio: DEFAULT_TARGET_RATIO,
+            compaction_trigger_ratio: DEFAULT_COMPACTION_TRIGGER_RATIO,
+            reserved_completion_tokens: DEFAULT_RESERVED_COMPLETION_TOKENS,
+            recent_turns: DEFAULT_RECENT_TURNS,
+            max_tool_exchange_tokens: DEFAULT_MAX_TOOL_EXCHANGE_TOKENS,
+            max_memory_tokens: DEFAULT_MAX_MEMORY_TOKENS,
+            max_summary_tokens: DEFAULT_MAX_SUMMARY_TOKENS,
+            reasoning_policy: ReasoningRetentionPolicy::Auto,
+        }
+    }
+}
+
+impl ContextConfig {
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+
+        config.enabled = read_env_value("SPARROW_CONTEXT_ENABLED")
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(config.enabled);
+        config.target_ratio = read_env_value("SPARROW_CONTEXT_TARGET_RATIO")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| (0.0..=1.0).contains(value) && *value > 0.0)
+            .unwrap_or(config.target_ratio);
+        config.compaction_trigger_ratio =
+            read_env_value("SPARROW_CONTEXT_COMPACTION_TRIGGER_RATIO")
+                .and_then(|value| value.parse::<f32>().ok())
+                .filter(|value| (0.0..=1.0).contains(value) && *value > 0.0)
+                .unwrap_or(config.compaction_trigger_ratio);
+        config.reserved_completion_tokens =
+            read_env_value("SPARROW_CONTEXT_RESERVED_COMPLETION_TOKENS")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(config.reserved_completion_tokens);
+        config.recent_turns = read_env_value("SPARROW_CONTEXT_RECENT_TURNS")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(config.recent_turns);
+        config.max_tool_exchange_tokens =
+            read_env_value("SPARROW_CONTEXT_MAX_TOOL_EXCHANGE_TOKENS")
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(config.max_tool_exchange_tokens);
+        config.max_memory_tokens = read_env_value("SPARROW_CONTEXT_MAX_MEMORY_TOKENS")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(config.max_memory_tokens);
+        config.max_summary_tokens = read_env_value("SPARROW_CONTEXT_MAX_SUMMARY_TOKENS")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(config.max_summary_tokens);
+        config.reasoning_policy = read_env_value("SPARROW_CONTEXT_REASONING_POLICY")
+            .map(|value| ReasoningRetentionPolicy::from_str(&value))
+            .unwrap_or(config.reasoning_policy);
+
+        config
+    }
+
+    pub fn to_policy(&self) -> ContextPolicy {
+        ContextPolicy {
+            enabled: self.enabled,
+            target_ratio: self.target_ratio,
+            compaction_trigger_ratio: self.compaction_trigger_ratio,
+            reserved_completion_tokens: self.reserved_completion_tokens,
+            recent_turns: self.recent_turns,
+            max_tool_exchange_tokens: self.max_tool_exchange_tokens,
+            max_memory_tokens: self.max_memory_tokens,
+            max_summary_tokens: self.max_summary_tokens,
+            reasoning_policy: self.reasoning_policy,
         }
     }
 }

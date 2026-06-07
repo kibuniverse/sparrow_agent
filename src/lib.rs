@@ -9,6 +9,7 @@ pub mod cli_observer;
 pub mod client;
 pub mod config;
 pub mod console;
+pub mod context;
 pub mod conversation_store;
 pub mod debug;
 pub mod frontend_assets;

@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use sparrow_agent::{
     config::{
-        AppConfig, BashConfig, ConfirmationPolicy, FilesystemConfig, FilesystemMode,
+        AppConfig, BashConfig, ConfirmationPolicy, ContextConfig, FilesystemConfig, FilesystemMode,
         StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
     frontend_assets::EmbeddedAsset,
@@ -327,5 +327,6 @@ fn test_config() -> AppConfig {
             env_allowlist: vec!["PATH".into()],
         },
         sub_agent: SubAgentConfig::default(),
+        context: ContextConfig::default(),
     }
 }
