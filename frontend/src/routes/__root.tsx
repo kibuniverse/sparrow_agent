@@ -20,4 +20,4 @@ function RootLayout() {
   return <Outlet />
 }
 
-export { rootRoute }
+export const Route = rootRoute

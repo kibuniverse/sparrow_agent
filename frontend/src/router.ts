@@ -1,48 +1,15 @@
-import { useEffect, useState } from 'react'
+import { createRouter } from '@tanstack/react-router'
+import { routeTree } from './routeTree.gen'
 
-export type AppRoute =
-  | { name: 'chat' }
-  | { name: 'task'; taskId: string }
-  | { name: 'trace-file'; fileName: string }
-  | { name: 'replay'; fileName: string }
-  | { name: 'upload' }
+const router = createRouter({
+  routeTree,
+  basepath: '/sparrow_agent',
+})
 
-export function useRoute(): AppRoute {
-  const [route, setRoute] = useState(readRoute)
-
-  useEffect(() => {
-    const handleRouteChange = () => setRoute(readRoute())
-    window.addEventListener('popstate', handleRouteChange)
-    return () => window.removeEventListener('popstate', handleRouteChange)
-  }, [])
-
-  return route
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: typeof router
+  }
 }
 
-export function navigateTo(path: string) {
-  window.history.pushState(null, '', path)
-  window.dispatchEvent(new PopStateEvent('popstate'))
-}
-
-function readRoute(): AppRoute {
-  const traceFileMatch = window.location.pathname.match(/^\/trace-files\/([^/]+)$/)
-  if (traceFileMatch?.[1]) {
-    return { name: 'trace-file', fileName: decodeURIComponent(traceFileMatch[1]) }
-  }
-
-  const replayMatch = window.location.pathname.match(/^\/replay\/([^/]+)$/)
-  if (replayMatch?.[1]) {
-    return { name: 'replay', fileName: decodeURIComponent(replayMatch[1]) }
-  }
-
-  const taskMatch = window.location.pathname.match(/^\/tasks\/([^/]+)$/)
-  if (taskMatch?.[1]) {
-    return { name: 'task', taskId: decodeURIComponent(taskMatch[1]) }
-  }
-
-  if (window.location.pathname === '/upload') {
-    return { name: 'upload' }
-  }
-
-  return { name: 'chat' }
-}
+export { router }
