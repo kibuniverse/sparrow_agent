@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { TraceDetailPanel } from '../components/TraceDetailPanel'
 import { TraceReplayControls } from '../components/TraceReplayControls'
 import { TraceTimeline } from '../components/TraceTimeline'
 import { useTraceReplay } from '../hooks/useTraceReplay'
+import { useAppStore } from '../store'
 import {
   applyTraceEvent,
   applyTraceSnapshot,
@@ -13,22 +15,17 @@ import type { TaskSnapshot, TraceArchive, TraceEvent } from '../types/trace'
 
 type ViewMode = 'upload' | 'preview' | 'replay'
 
-interface TraceUploadPageProps {
-  onBack: () => void
-  onOpenTask: (taskId: string) => void
-}
+export function TraceUploadPage() {
+  const navigate = useNavigate()
+  const resetTrace = useAppStore((s) => s.resetTrace)
 
-export function TraceUploadPage({ onBack, onOpenTask }: TraceUploadPageProps) {
   const [viewMode, setViewMode] = useState<ViewMode>('upload')
   const [error, setError] = useState<string | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [snapshot, setSnapshot] = useState<TaskSnapshot | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Preview state: fully applied snapshot
   const [previewState, setPreviewState] = useState<TraceState>(() => createInitialTraceState())
-
-  // Replay state: built incrementally from events
   const [replayState, setReplayState] = useState<TraceState>(() => createInitialTraceState())
 
   const activeState = viewMode === 'replay' ? replayState : previewState
@@ -144,6 +141,11 @@ export function TraceUploadPage({ onBack, onOpenTask }: TraceUploadPageProps) {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [])
 
+  const openTask = (taskId: string) => {
+    resetTrace()
+    navigate({ to: '/tasks/$taskId', params: { taskId } })
+  }
+
   const isLoaded = viewMode === 'preview' || viewMode === 'replay'
 
   return (
@@ -189,7 +191,7 @@ export function TraceUploadPage({ onBack, onOpenTask }: TraceUploadPageProps) {
             ) : null}
             <button
               className="h-9 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700"
-              onClick={onBack}
+              onClick={() => navigate({ to: '/' })}
               type="button"
             >
               返回聊天
@@ -239,7 +241,7 @@ export function TraceUploadPage({ onBack, onOpenTask }: TraceUploadPageProps) {
             <TraceDetailPanel
               className="lg:sticky lg:top-24 lg:max-h-[calc(100dvh-7rem)] lg:overflow-auto"
               node={selectedNode}
-              onOpenTask={onOpenTask}
+              onOpenTask={openTask}
             />
           </div>
         ) : null}
