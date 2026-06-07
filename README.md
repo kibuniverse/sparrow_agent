@@ -19,6 +19,34 @@ Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSee
 - **Trace 归档与压缩**：CLI 观察模式每轮任务完成后写入 `.sparrow-trace.json` 归档文件，支持 V2 压缩格式（事件合并、请求快照 diff/keyframe 编码），可通过前端回放。
 - **安全配置管理**：API 密钥可交互式初始化并保存到本地配置文件，也可由环境变量覆盖。
 
+## 安装
+
+可以直接使用仓库中的 `install.sh` 安装最新 GitHub Release 产物：
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/kibuniverse/sparrow_agent/main/install.sh | bash
+```
+
+安装脚本会自动检测当前系统架构，从 GitHub Releases 下载最新版本对应的预编译包，校验 `.sha256` 后安装，并在全局 bin 目录创建两个命令：
+
+- `sparrow_agent`
+- `spa`
+
+默认会把版本化的二进制安装到 `~/.sparrow_agent/releases/<tag>/<target>/sparrow_agent`，并优先在 `$CARGO_HOME/bin`、`~/.cargo/bin` 或 `~/.local/bin` 下创建命令链接。安装后可以运行：
+
+```bash
+sparrow_agent --help
+spa --help
+```
+
+如需指定命令链接目录，可设置 `SPARROW_AGENT_BIN_DIR`：
+
+```bash
+SPARROW_AGENT_BIN_DIR=/usr/local/bin bash install.sh
+```
+
+如果目标目录中已存在非符号链接文件，脚本会停止；确认要覆盖时可设置 `SPARROW_AGENT_FORCE=1`。
+
 ## 快速开始
 
 ### 依赖准备
