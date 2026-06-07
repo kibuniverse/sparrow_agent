@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { routeTree } from './routeTree.gen'
+import { useAppStore } from './store'
 import type { CreateAgentTaskResponse, TaskSnapshot, TraceEvent } from './types/trace'
 
 class FakeEventSource {
@@ -256,11 +257,33 @@ describe('App trace visualization', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    useAppStore.setState({
+      traceState: {
+        taskId: null,
+        conversationId: null,
+        status: 'idle',
+        lastSeq: 0,
+        rootNodeIds: [],
+        nodesById: {},
+        selectedNodeId: null,
+        latestReasoningText: '',
+        latestRunningNodeId: null,
+        finalAnswer: '',
+        error: null,
+        startedAt: null,
+        updatedAt: null,
+        durationMs: null,
+      },
+      conversationId: null,
+      messages: [],
+      completedTaskIds: new Set(),
+    })
   })
 
   it('submits a chat task, shows thinking preview, opens detail, and displays tool output', async () => {
     renderApp('/')
 
+    await screen.findByRole('heading', { name: 'Agent Trace' })
     fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '分析仓库' } })
     fireEvent.click(screen.getByRole('button', { name: '发送消息' }))
 
@@ -273,7 +296,7 @@ describe('App trace visualization', () => {
     expect(await screen.findByText('需要先读取仓库入口。')).toBeInTheDocument()
     expect(screen.getByText('准备调用 1 个工具：read_file')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+    fireEvent.click(screen.getByRole('button', { name: '查看任务详情' }))
 
     expect(await screen.findByRole('heading', { name: '任务详情' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '查看 工具调用 1：read_file' }))
