@@ -6,7 +6,7 @@ use crate::{
     agent::Agent,
     config::AppConfig,
     console::{is_exit_command, read_user_input},
-    server::{ServerState, build_browser_router},
+    server::{FRONTEND_BASE_PATH, ServerState, build_browser_router},
     trace::trace_id,
     trace_file::{archive_file_name, default_trace_dir, write_trace_archive},
     trace_store::{TraceStore, TraceStoreSink},
@@ -27,11 +27,11 @@ pub fn default_frontend_dist() -> PathBuf {
 }
 
 pub fn browser_task_url(addr: SocketAddr, task_id: &str) -> String {
-    format!("http://{addr}/tasks/{task_id}")
+    format!("http://{addr}{FRONTEND_BASE_PATH}/tasks/{task_id}")
 }
 
 pub fn replay_trace_url(addr: SocketAddr, file_name: &str) -> String {
-    format!("http://{addr}/replay/{file_name}")
+    format!("http://{addr}{FRONTEND_BASE_PATH}/replay/{file_name}")
 }
 
 pub async fn run_cli_with_browser_trace(config: AppConfig, addr: SocketAddr) -> Result<()> {

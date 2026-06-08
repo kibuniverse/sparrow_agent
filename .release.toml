@@ -1,0 +1,45 @@
+# .release.toml
+# ========== 基础全局配置 ==========
+# 单包项目关闭 workspace（默认 false，显式声明更清晰）
+workspace = false
+
+# 执行 release 后，自动 push 提交 + tag 到远程 Git
+push = true
+
+# 允许 alpha / beta / rc 等预发布版本
+allow-pre-releases = true
+
+# 预发布版本也正常打 git tag（cargo-dist 依赖 tag，必须开启）
+pre-release-tag = true
+
+# ========== Git 提交 & Tag 模板 ==========
+# Git commit 提交信息
+commit-message = "chore(release): {{version}}"
+
+# Git Tag 格式：v+版本号，与 cargo-dist 标准格式完全对齐
+tag-name = "v{{version}}"
+
+# 为 tag 附加注解标签（推荐，比轻量 tag 更规范）
+annotate-tags = true
+tag-message = "Release {{version}}"
+
+# ========== 变更日志（Changelog） ==========
+# 自动更新 CHANGELOG.md（需提前安装 git-cliff）
+changelog = true
+changelog-path = "CHANGELOG.md"
+# 使用 git-cliff 生成日志（主流、格式美观）
+changelog-generator = "git cliff"
+
+# ========== 安全校验（默认开启，防误操作） ==========
+# 发布前强制检查工作区是否干净（无未提交改动）
+require-clean-working-tree = true
+
+# 禁止降级版本（只能升不能降）
+bump-allow-downgrade = false
+
+# ========== 发布行为控制 ==========
+# 只修改 Cargo.toml 版本，不篡改其他字段
+modify-version-files = true
+
+# 不跳过依赖版本检查（保持严谨）
+skip-dependency-check = false
