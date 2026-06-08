@@ -2084,7 +2084,7 @@ dependencies = [
 
 [[package]]
 name = "sparrow_agent"
-version = "0.0.3-alpha"
+version = "0.0.3-alpha.1"
 dependencies = [
  "anyhow",
  "async-stream",

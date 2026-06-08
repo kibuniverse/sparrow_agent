@@ -116,7 +116,10 @@ pub fn build_browser_router_with_assets(
     let index = frontend_dist.join("index.html");
     let router = api_routes()
         .route("/api/agent/trace-files/{file_name}", get(open_trace_file))
-        .route("/", get(|| async { Redirect::temporary("/sparrow_agent/") }))
+        .route(
+            "/",
+            get(|| async { Redirect::temporary("/sparrow_agent/") }),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -138,9 +141,7 @@ pub fn build_browser_router_with_assets(
 }
 
 fn embedded_frontend_response(path: &str, assets: &'static [EmbeddedAsset]) -> Response {
-    let path = path
-        .strip_prefix(FRONTEND_BASE_PATH)
-        .unwrap_or(path);
+    let path = path.strip_prefix(FRONTEND_BASE_PATH).unwrap_or(path);
     let requested_path = path.trim_start_matches('/');
     let requested_path = if requested_path.is_empty() {
         "index.html"
