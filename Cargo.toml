@@ -1,6 +1,6 @@
 [package]
 name = "sparrow_agent"
-version = "0.0.2"
+version = "0.0.3-alpha"
 edition = "2024"
 repository = "https://github.com/kibuniverse/sparrow_agent"
 
