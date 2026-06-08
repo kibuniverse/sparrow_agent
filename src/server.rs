@@ -7,11 +7,13 @@ use axum::{
     extract::{Path, Query, State},
     http::{StatusCode, Uri, header::CONTENT_TYPE},
     response::{
-        IntoResponse, Response,
+        IntoResponse, Redirect, Response,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
 };
+
+pub const FRONTEND_BASE_PATH: &str = "/sparrow_agent";
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{net::TcpListener, time::sleep};
@@ -114,6 +116,7 @@ pub fn build_browser_router_with_assets(
     let index = frontend_dist.join("index.html");
     let router = api_routes()
         .route("/api/agent/trace-files/{file_name}", get(open_trace_file))
+        .route("/", get(|| async { Redirect::temporary("/sparrow_agent/") }))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -123,7 +126,10 @@ pub fn build_browser_router_with_assets(
         .with_state(state.with_trace_dir(trace_dir));
 
     if index.exists() {
-        router.fallback_service(ServeDir::new(frontend_dist).fallback(ServeFile::new(index)))
+        router.nest_service(
+            "/sparrow_agent",
+            ServeDir::new(frontend_dist).fallback(ServeFile::new(index)),
+        )
     } else {
         router.fallback(move |uri: Uri| async move {
             embedded_frontend_response(uri.path(), embedded_assets)
@@ -132,6 +138,9 @@ pub fn build_browser_router_with_assets(
 }
 
 fn embedded_frontend_response(path: &str, assets: &'static [EmbeddedAsset]) -> Response {
+    let path = path
+        .strip_prefix(FRONTEND_BASE_PATH)
+        .unwrap_or(path);
     let requested_path = path.trim_start_matches('/');
     let requested_path = if requested_path.is_empty() {
         "index.html"
