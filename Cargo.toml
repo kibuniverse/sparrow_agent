@@ -1,6 +1,6 @@
 [package]
 name = "sparrow_agent"
-version = "0.0.3-alpha.2"
+version = "0.0.3-alpha.3"
 description = "A full function Rust agent"
 license = "MIT"
 edition = "2024"
