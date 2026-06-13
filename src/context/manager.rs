@@ -5,7 +5,7 @@ use crate::{
     context::{
         budget::{ContextPolicy, TokenEstimator},
         compiler::{CompileInput, CompiledContext, ContextCompiler},
-        memory::WorkingMemory,
+        memory::{DeltaOutcome, MemoryDelta, WorkingMemory},
         summary::{ContextSummarizer, fallback_turn_summary},
         transcript::{ConversationTranscript, MessageId},
     },
@@ -47,6 +47,10 @@ impl ContextManager {
     ) -> MessageId {
         self.transcript
             .record_tool_result(tool_call_id, content, metadata)
+    }
+
+    pub fn apply_memory_delta(&mut self, delta: MemoryDelta) -> DeltaOutcome {
+        self.working_memory.apply_delta(&delta)
     }
 
     pub fn compile_request(&mut self, input: CompileInput) -> Result<CompiledContext> {
@@ -113,7 +117,7 @@ mod tests {
     use crate::{
         api::ChoiceMessage,
         context::{
-            ContextManager, ContextSummarizer,
+            ContextManager, ContextSummarizer, DeltaOutcome, MemoryDelta,
             budget::ContextPolicy,
             compiler::CompileInput,
             transcript::{ConversationTurn, TurnSummary},
@@ -151,5 +155,29 @@ mod tests {
         assert_eq!(report.compacted_turns, 1);
         assert_eq!(report.fallback_summaries, 1);
         assert!(compiled.report.summarized_turns >= 1);
+    }
+
+    #[test]
+    fn apply_memory_delta_then_compile_injects_it() {
+        let mut manager = ContextManager::new(
+            "system".into(),
+            "deepseek-v4-pro".into(),
+            ContextPolicy::default(),
+        );
+
+        let outcome = manager.apply_memory_delta(MemoryDelta::AddFact {
+            content: "fact one".into(),
+        });
+        assert_eq!(outcome, DeltaOutcome::Applied);
+
+        let compiled = manager.compile_request(CompileInput).unwrap();
+        let memory_content = compiled.messages.iter().find_map(|message| {
+            message
+                .content
+                .as_deref()
+                .filter(|content| content.starts_with("Working memory for the ongoing task"))
+        });
+        let memory_content = memory_content.expect("working memory message should be injected");
+        assert!(memory_content.contains("fact one"));
     }
 }
