@@ -112,8 +112,31 @@ async fn browser_router_serves_frontend_index() {
         frontend.path().to_path_buf(),
     );
 
-    let response = app
+    // The frontend now lives under the /sparrow_agent base path, so the bare
+    // root redirects there instead of serving the index directly.
+    let redirect = app
+        .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(redirect.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        redirect
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "/sparrow_agent/"
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/sparrow_agent/")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -140,7 +163,7 @@ async fn browser_router_falls_back_for_task_deep_links() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tasks/task_123")
+                .uri("/sparrow_agent/tasks/task_123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -179,7 +202,12 @@ async fn browser_router_uses_embedded_frontend_when_dist_is_missing() {
 
     let index_response = app
         .clone()
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/sparrow_agent/")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(index_response.status(), StatusCode::OK);
@@ -193,7 +221,7 @@ async fn browser_router_uses_embedded_frontend_when_dist_is_missing() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/tasks/task_123")
+                .uri("/sparrow_agent/tasks/task_123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -209,7 +237,7 @@ async fn browser_router_uses_embedded_frontend_when_dist_is_missing() {
     let asset_response = app
         .oneshot(
             Request::builder()
-                .uri("/assets/app.js")
+                .uri("/sparrow_agent/assets/app.js")
                 .body(Body::empty())
                 .unwrap(),
         )
