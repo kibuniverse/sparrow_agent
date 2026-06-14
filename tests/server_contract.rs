@@ -8,7 +8,7 @@ use serde_json::json;
 use sparrow_agent::{
     config::{
         AppConfig, BashConfig, ConfirmationPolicy, ContextConfig, FilesystemConfig, FilesystemMode,
-        StreamingConfig, SubAgentConfig, ToolResultConfig,
+        MemoryConfig, StreamingConfig, SubAgentConfig, ToolResultConfig,
     },
     frontend_assets::EmbeddedAsset,
     server::{ServerState, build_router},
@@ -328,5 +328,6 @@ fn test_config() -> AppConfig {
         },
         sub_agent: SubAgentConfig::default(),
         context: ContextConfig::default(),
+        memory: MemoryConfig::default(),
     }
 }

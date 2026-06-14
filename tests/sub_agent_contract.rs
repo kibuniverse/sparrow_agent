@@ -3,7 +3,8 @@ use sparrow_agent::{
     api::{FunctionCall, ToolCall},
     config::{
         AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, ContextConfig,
-        FilesystemConfig, FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
+        FilesystemConfig, FilesystemMode, MemoryConfig, StreamingConfig, SubAgentConfig,
+        ToolResultConfig,
     },
     sub_agent::{SubAgentCoordinator, SubAgentRequest, SubAgentToolProvider},
     tool_provider::ToolProvider,
@@ -68,6 +69,7 @@ fn app_config() -> AppConfig {
         },
         sub_agent: sub_agent_config(),
         context: ContextConfig::default(),
+        memory: MemoryConfig::default(),
     }
 }
 

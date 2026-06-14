@@ -4,6 +4,7 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use indicatif::{InMemoryTerm, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 use crate::{
     api::{ChatCompletionRequest, ChoiceMessage, ThinkingConfig, Usage},
@@ -13,6 +14,7 @@ use crate::{
     context::{CompileInput, ContextCompileReport, ContextManager},
     debug_log,
     local_tools::LocalToolProvider,
+    memory_tool::{MemoryBuffer, MemoryToolProvider, new_memory_buffer},
     mcp::{client::McpClient, filesystem_provider::McpToolProvider},
     streaming::{AgentEventSink, AgentStreamEvent, StreamAccumulator},
     sub_agent::SubAgentToolProvider,
@@ -31,6 +33,7 @@ pub struct Agent {
     context: ContextManager,
     tool_registry: ToolRegistry,
     context_usage: ContextUsage,
+    memory_buffer: MemoryBuffer,
 }
 
 impl Agent {
@@ -59,6 +62,7 @@ impl Agent {
             output_dir: config.tool_results.output_dir.clone(),
         });
         let mut tool_registry = ToolRegistry::with_result_processor(tool_result_processor);
+        let memory_buffer = new_memory_buffer();
 
         // Add local tools
         if config.bash.enabled {
@@ -83,6 +87,12 @@ impl Agent {
             config.bash.clone(),
             Some(config.api_key.clone()),
         )));
+
+        if config.memory.enabled {
+            tool_registry.add_provider(Box::new(MemoryToolProvider::new(Arc::clone(
+                &memory_buffer,
+            ))));
+        }
 
         if config.sub_agent.enabled && config.sub_agent.max_depth > 0 {
             tool_registry.add_provider(Box::new(SubAgentToolProvider::new(config.clone())));
@@ -154,6 +164,7 @@ impl Agent {
             context,
             tool_registry,
             context_usage,
+            memory_buffer,
         })
     }
 
@@ -377,7 +388,21 @@ impl Agent {
         }
     }
 
+    fn drain_memory(&mut self) {
+        let deltas = match self.memory_buffer.lock() {
+            Ok(mut buffer) => std::mem::take(&mut *buffer),
+            Err(_) => {
+                debug_log!("memory buffer lock poisoned; skipping drain");
+                return;
+            }
+        };
+        for delta in deltas {
+            self.context.apply_memory_delta(delta);
+        }
+    }
+
     fn build_request(&mut self) -> Result<(ChatCompletionRequest, ContextCompileReport)> {
+        self.drain_memory();
         let compiled = self.context.compile_request(CompileInput)?;
         let report = compiled.report;
         let request = ChatCompletionRequest {
@@ -856,7 +881,8 @@ mod tests {
         },
         config::{
             AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, ContextConfig,
-            FilesystemConfig, FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
+            FilesystemConfig, FilesystemMode, MemoryConfig, StreamingConfig, SubAgentConfig,
+            ToolResultConfig,
         },
         context::ContextCompileReport,
         streaming::{AgentEventSink, AgentStreamEvent},
@@ -1185,6 +1211,7 @@ mod tests {
             },
             sub_agent,
             context: ContextConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }
