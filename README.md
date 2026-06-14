@@ -1,12 +1,14 @@
 # Sparrow Agent
 
-Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行、可显式启用的 Bash 命令工具、基于 MCP filesystem server 的受控文件系统工具，以及子 Agent 隔离任务委派。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
+Sparrow Agent 是一个 Rust 编写的本地 Agent 实验项目。它以 DeepSeek Chat Completion 为模型后端，支持命令行多轮对话、流式 reasoning 展示、并行工具调用、Tavily Web 搜索、Rust WASM 沙盒执行、可显式启用的 Bash 命令工具、基于 MCP filesystem server 的受控文件系统工具、子 Agent 隔离任务委派，以及内置的上下文管理模块（请求编译、历史压缩、token 预算、工作记忆注入）和 `updateMemory` 工作记忆工具。项目还包含一个 React/Vite 前端，用于实时查看 Agent 调用链路和工具执行 trace。
 
 ## 功能特性
 
 - **多轮对话**：CLI 和 Server 模式都会为会话维护消息历史，支持连续上下文对话。
 - **流式输出**：默认启用 DeepSeek SSE 流式调用，可在 CLI 展示 reasoning 与最终回答，在 Server 模式转成结构化 trace。
 - **工具调用循环**：模型可连续请求工具，工具结果会回填到消息历史后继续请求模型。
+- **上下文管理模块**：`ContextManager` 在 Agent 与模型请求之间负责请求编译。完整会话日志（transcript）与每轮实际发送给模型的 messages 分离；每轮按 token 预算编译一个协议安全的请求：完整保留最近 N 轮，把更早的轮次压缩为历史摘要 message，注入工作记忆，并为模型输出预留 completion 预算。DeepSeek 系列模型下，被完整保留的历史 assistant 消息会继续携带 `reasoning_content`，避免接口兼容问题。
+- **工作记忆（`updateMemory`）**：内置工具，用于持久化当前任务的目标、事实、决策和开放问题。模型调用产生的 delta 会暂存到内存缓冲，并在下一轮请求编译前 drain 到 `WorkingMemory`，作为压缩上下文注入，确保关键信息能跨历史压缩保留下来。
 - **并行工具执行**：同一轮模型返回的多个工具调用会并发执行，并在 trace 中独立记录开始、完成和失败事件。
 - **可插拔工具提供者**：本地工具、MCP 工具和子 Agent 工具统一实现 `ToolProvider`，由 `ToolRegistry` 汇总定义并分发调用。
 - **Web 搜索**：内置 `webSearch`，通过 Tavily API 返回答案、摘要和来源链接。
@@ -119,20 +121,20 @@ cargo run -- --browser-trace
 SPARROW_INSPECT_ADDR=127.0.0.1:9797 cargo run -- --inspect
 ```
 
-每次在 CLI 输入一条消息后，终端会先打印本轮实时任务地址：
+每次在 CLI 输入一条消息后，终端会先打印本轮实时任务地址（前端挂载在 `/sparrow_agent` 基路径下）：
 
 ```text
-inspect> http://127.0.0.1:8787/tasks/task_01...
+inspect> http://127.0.0.1:8787/sparrow_agent/tasks/task_01...
 ```
 
 打开该地址即可查看本轮 loop 的模型调用、reasoning 增量、工具调用、工具输出和最终回答。任务完成或失败后，CLI 会将完整 trace 写入 `SPARROW_TRACE_DIR` 指定目录；如果未设置该变量，默认写入运行目录下的 `.sparrow_agent/traces`：
 
 ```text
 trace> /Users/me/project/.sparrow_agent/traces/task_01....sparrow-trace.json
-replay> http://127.0.0.1:8787/replay/task_01....sparrow-trace.json
+replay> http://127.0.0.1:8787/sparrow_agent/replay/task_01....sparrow-trace.json
 ```
 
-打开 `replay>` 地址可在前端按事件顺序回放完整 trace；将路径中的 `/replay/` 改成 `/trace-files/` 可直接预览最终状态。
+打开 `replay>` 地址可在前端按事件顺序回放完整 trace；将路径中的 `/replay/` 改成 `/trace-files/`（即 `/sparrow_agent/trace-files/<文件名>`）可直接预览最终状态。
 
 ## Server 与前端模式
 
@@ -156,6 +158,8 @@ pnpm install
 pnpm dev
 ```
 
+前端路由统一挂载在 `/sparrow_agent` 基路径下（例如 `/sparrow_agent/tasks/<task_id>`），开发与构建产物都遵循该前缀。
+
 前端能力：
 
 - 聊天页创建流式 Agent 任务；
@@ -164,7 +168,8 @@ pnpm dev
 - 通过 SSE 实时合并 trace 事件；
 - 将模型调用、模型输出和工具调用归并为可选中的调用树；
 - 支持子 Agent 任务的嵌套 trace 展示；
-- Trace 归档文件直接预览（`/trace-files/`）和按事件回放（`/replay/`）；
+- Trace 归档文件直接预览（`/sparrow_agent/trace-files/<文件名>`）和按事件回放（`/sparrow_agent/replay/<文件名>`）；
+- 上传本地 `.sparrow-trace.json` 归档文件在浏览器内直接预览或回放（`/sparrow_agent/upload`）；
 - EventSource 断线后会按 1s、2s、5s、10s 退避重连，并使用 `after_seq` 续传。
 
 ## HTTP API
@@ -206,6 +211,16 @@ pnpm dev
 | `SPARROW_STREAMING_ENABLED` | 是否启用模型流式调用 | `true` |
 | `SPARROW_SHOW_REASONING` | CLI 是否展示 reasoning | `true` |
 | `SPARROW_SHOW_TOOL_CALL_DELTAS` | CLI 是否展示工具调用参数增量 | `false` |
+| `SPARROW_MEMORY_ENABLED` | 是否启用工作记忆工具 `updateMemory` | `true` |
+| `SPARROW_CONTEXT_ENABLED` | 是否启用上下文管理模块；关闭后回退为直接发送全量消息的旧行为 | `true` |
+| `SPARROW_CONTEXT_TARGET_RATIO` | 编译后 prompt token 相对上下文窗口的目标占比 | `0.60` |
+| `SPARROW_CONTEXT_COMPACTION_TRIGGER_RATIO` | 触发历史压缩判断的占比阈值 | `0.40` |
+| `SPARROW_CONTEXT_RESERVED_COMPLETION_TOKENS` | 为模型输出预留的 completion token 数 | `8192` |
+| `SPARROW_CONTEXT_RECENT_TURNS` | 完整保留（不压缩）的最近对话轮数 | `6` |
+| `SPARROW_CONTEXT_MAX_TOOL_EXCHANGE_TOKENS` | 单个工具交换摘要的 token 上限 | `4096` |
+| `SPARROW_CONTEXT_MAX_MEMORY_TOKENS` | 工作记忆注入到请求的 token 上限 | `12000` |
+| `SPARROW_CONTEXT_MAX_SUMMARY_TOKENS` | 历史轮次摘要的 token 上限 | `8000` |
+| `SPARROW_CONTEXT_REASONING_POLICY` | 历史 reasoning 保留策略：`auto`（按模型选择，DeepSeek 保留）、`preserve`、`omit_when_supported` | `auto` |
 | `SPARROW_BASH_ENABLED` | 是否启用 CLI Bash 命令工具 `runBashCommand` | `true` |
 | `SPARROW_BASH_ROOTS` | Bash 工具允许使用的 cwd 根目录列表，Unix 用 `:` 分隔，Windows 用 `;` 分隔 | `.` |
 | `SPARROW_BASH_APPROVAL_MODE` | Bash 审批模式：`smart` 自动放行低风险命令，`always` 每次确认，`never` 不提示但仍拦截 blocked 命令 | `smart` |
@@ -238,12 +253,14 @@ pnpm dev
 | 配置项 | 默认值 |
 |--------|--------|
 | 模型 | `deepseek-v4-pro` |
-| 系统提示词 | `You are a helpful assistant.` + 运行时文件系统上下文（当前工作目录和可执行文件路径） |
+| 系统提示词 | 基础提示（helpful assistant + 文件读取指引：忽略 `target`、`dist`、`output` 等构建产物，先读入口文件而非整棵目录树 + `updateMemory` 工具使用指引）+ 运行时文件系统上下文（当前工作目录和可执行文件路径） |
 | 推理强度 | `high` |
 | 最大工具调用轮数 | `100` |
 | 文件系统最大读取字节数 | `262144` |
 | 文件系统最大写入字节数 | `262144` |
 | 工具输出最大注入字符数 | `20000` |
+| 上下文窗口（`deepseek-v4-flash` / `deepseek-v4-pro`） | `1,000,000` tokens；其他模型按未知窗口渲染 |
+| 上下文管理 prompt 目标占比 | `0.60`（即约 600k tokens，再扣除 completion 预留） |
 
 ### 配置文件
 
@@ -269,6 +286,12 @@ CLI / React Frontend
         v
  ConversationStore  ->  Agent
                          |
+        record_user / record_assistant / record_tool_result / drain_memory
+                         |
+                         v
+                ContextManager ──► WorkingMemory ◄── updateMemory (MemoryToolProvider)
+                  (transcript + 预算策略)
+                         |
                          v
                   DeepSeekClient
                          |
@@ -276,24 +299,26 @@ CLI / React Frontend
                          |
                          v
                    ToolRegistry
-                  /        |        \
-                 v         v         v
-        LocalToolProvider  SubAgentToolProvider  McpToolProvider
-          |        |              |                   |
-          v        v              v                   v
-     webSearch  runRustWasm  runBashCommand      MCP filesystem tools
-                            runSubAgentTask
+        /          |             |              \
+       v           v             v              v
+ LocalTool   MemoryTool    SubAgentTool    McpToolProvider
+ Provider    Provider      Provider            |
+  |   |         |               |              v
+  v   v   updateMemory     runSubAgentTask   MCP filesystem
+webSearch runRustWasm                            tools
+         runBashCommand
 ```
 
 核心流程：
 
 1. `main.rs` 加载 `AppConfig`，根据是否传入 `--server` 或 `--inspect` 启动 CLI REPL、CLI 浏览器观察模式或 Axum Server。
-2. `Agent` 维护 `ChatMessage` 历史，构造 DeepSeek Chat Completion 请求，并开启 thinking/reasoning 配置。
-3. `DeepSeekClient` 负责普通请求和 SSE 流式请求；流式响应由 `StreamAccumulator` 归并为完整 assistant message。
-4. 如果 assistant message 包含工具调用，`ToolRegistry` 将调用分发给对应 provider，并行执行同一轮工具。
-5. 工具结果经过 `ToolResultProcessor` 截断处理（超出阈值的内容保存到本地文件并注入截断提示）后，作为 `tool` message 追加回历史，Agent 进入下一轮模型请求，直到返回最终文本或达到最大轮数。
-6. Server 模式下，`TraceStoreSink` 把关键阶段写入内存 `TraceStore`，前端通过 snapshot 和 SSE 消费这些事件。
-7. CLI 观察模式下，每轮任务完成后通过 `trace_file` 模块写入压缩的 `.sparrow-trace.json` 归档文件。
+2. `Agent` 不再直接维护一个不断增长的 `Vec<ChatMessage>`，而是持有一个 `ContextManager`（完整会话 transcript + 工作记忆 + 预算策略）和一个 `ToolRegistry`。
+3. 每轮请求前，`Agent` 先把暂存的 `updateMemory` delta drain 到 `WorkingMemory`，再由 `ContextManager` 编译一个协议安全的请求：系统提示 → 工作记忆 message → 旧轮次的历史摘要 message → 最近 N 个完整轮次 → 当前用户输入，并按 token 预算迭代收缩“完整保留”窗口，必要时依次丢弃历史摘要和工作记忆。
+4. `DeepSeekClient` 负责普通请求和 SSE 流式请求；流式响应由 `StreamAccumulator` 归并为完整 assistant message。DeepSeek 模型下，被完整保留的历史 assistant 消息会继续携带原始 `reasoning_content`。
+5. 如果 assistant message 包含工具调用，`ToolRegistry` 将调用分发给对应 provider，并行执行同一轮工具。
+6. 工具结果经过 `ToolResultProcessor` 截断处理（超出阈值的内容保存到本地文件并注入截断提示）后，作为 `tool` message 记录回 transcript，Agent 进入下一轮模型请求，直到返回最终文本或达到最大轮数。
+7. Server 模式下，`TraceStoreSink` 把关键阶段写入内存 `TraceStore`，前端通过 snapshot 和 SSE 消费这些事件。
+8. CLI 观察模式下，每轮任务完成后通过 `trace_file` 模块写入压缩的 `.sparrow-trace.json` 归档文件。
 
 ## 子 Agent 系统
 
@@ -301,8 +326,8 @@ CLI / React Frontend
 
 核心特性：
 
-- **隔离上下文**：子 Agent 拥有独立的消息历史和系统提示词，不依赖父 Agent 的对话上下文；
-- **工具限制**：默认仅允许 `webSearch`、`mcp__filesystem__read_file`、`mcp__filesystem__search_files`，可通过 `allowed_tools` 参数按需缩小；
+- **隔离上下文**：子 Agent 拥有独立的 `ContextManager`（独立 transcript 和工作记忆），不继承父 Agent 的会话历史或工作记忆，只能通过 `context_pack` 显式接收必要事实；
+- **工具限制**：默认仅允许 `webSearch`、`mcp__filesystem__read_file`、`mcp__filesystem__search_files`，可通过 `allowed_tools` 参数按需缩小（默认工具集不含 `updateMemory`）；
 - **递归深度控制**：默认最大深度为 1（子 Agent 不能再创建孙 Agent），每层递减；
 - **并发限制**：同一轮最多同时运行 3 个子 Agent，超出等待信号量释放；
 - **超时保护**：每个子 Agent 默认 120 秒超时，超时后返回 timeout 状态；
@@ -324,6 +349,8 @@ CLI / React Frontend
 | `model_output.started` / `model_output.delta` / `model_output.completed` | 最终回答或工具调用输出 |
 | `tool_call.started` / `tool_call.completed` / `tool_call.failed` | 单个工具调用生命周期 |
 
+`model_call.started` 的 payload 额外携带一个 `context` 字段（`ContextCompileReport`），记录本轮请求编译的决策：估算 prompt token、目标 token、完整保留的最近轮数、被摘要化的轮数、reasoning 保留策略以及被摘要化/被保留的 reasoning 消息数等，便于在前端或 trace 归档中解释“为什么这一轮没有发送全部历史”。
+
 `TraceStore` 默认每个任务最多保留 10,000 个事件，超过限制会将任务标记为 failed。
 
 ### Trace 归档与压缩
@@ -341,6 +368,7 @@ CLI 观察模式每轮任务完成后会将 trace 序列化为 `.sparrow-trace.j
 | `webSearch` | local | 使用 Tavily 搜索网页，最多返回 5 条结果和 Tavily answer |
 | `runRustWasm` | local | 编译并执行定义了 `pub fn run() -> String` 的 Rust 代码 |
 | `runBashCommand` | local | 默认启用在 CLI 中执行单条非交互 Bash 命令，返回结构化 stdout/stderr/exit code/timeout 信息 |
+| `updateMemory` | memory | 持久化任务目标、事实、决策或开放问题到工作记忆；支持 `set_goal`/`add_fact`/`add_decision`/`add_question`/`resolve_question`/`remove_fact`/`clear` 操作，下一轮请求编译前应用 |
 | `runSubAgentTask` | sub-agent | 在隔离消息上下文中运行独立子任务，仅使用显式提供的上下文，返回结构化结果 |
 | `mcp__filesystem__*` | MCP | 来自 `@modelcontextprotocol/server-filesystem` 的文件系统工具，具体列表由 MCP server 动态发现 |
 
@@ -412,8 +440,10 @@ SPARROW_FILESYSTEM_MODE=read-only cargo run
 |------|------|
 | `src/main.rs` | 二进制入口，加载配置，启动 CLI REPL、CLI 观察模式或 Server |
 | `src/lib.rs` | 库入口，导出项目模块 |
-| `src/config.rs` | 应用配置、API key 初始化、所有环境变量解析和子 Agent/tool result 配置 |
-| `src/agent.rs` | Agent 编排器，维护消息历史、模型请求、工具循环、trace 转发 |
+| `src/config.rs` | 应用配置、API key 初始化、所有环境变量解析（含上下文管理、工作记忆、文件系统、Bash、子 Agent、tool result 等配置） |
+| `src/context/` | 上下文管理模块：`budget.rs`（token 估算、预算分区、reasoning 保留策略）、`transcript.rs`（完整会话日志与 turn/工具交换结构）、`compiler.rs`（请求编译、历史摘要、协议安全校验）、`manager.rs`（`ContextManager` 门面）、`memory.rs`（`WorkingMemory` 与 `MemoryDelta`）、`summary.rs`（摘要生成与 fallback）、`artifact_ref.rs`（工具输出/文件片段引用） |
+| `src/memory_tool.rs` | 工作记忆工具 provider，提供 `updateMemory`，将 delta 写入内存缓冲供 Agent drain |
+| `src/agent.rs` | Agent 编排器，持有 `ContextManager` 和 `ToolRegistry`，负责 drain 工作记忆、编译请求、模型调用、工具循环、memory delta 应用和 trace 转发 |
 | `src/client.rs` | DeepSeek HTTP/SSE 客户端 |
 | `src/api.rs` | DeepSeek Chat Completion 请求、响应和工具调用数据结构 |
 | `src/bash_runner.rs` | Bash 命令执行、cwd 校验、审批接入、超时、输出截断和环境变量过滤 |
@@ -427,20 +457,20 @@ SPARROW_FILESYSTEM_MODE=read-only cargo run
 | `src/local_tools.rs` | 本地工具 provider，注册 `webSearch`、`runRustWasm` 和 `runBashCommand` |
 | `src/tools.rs` | Tavily 搜索和 WASM 工具入口 |
 | `src/rust_wasm_runner.rs` | Rust 到 WASM 的编译与 wasmtime 沙盒运行 |
-| `src/sub_agent.rs` | 子 Agent 工具 provider、协调器、运行器和结构化结果模型 |
+| `src/sub_agent.rs` | 子 Agent 工具 provider、协调器、运行器和结构化结果模型；派生子配置并以工具 allowlist 启动拥有独立 `ContextManager` 的子 Agent |
 | `src/tool_result_processor.rs` | 工具输出截断、完整内容保存和截断提示注入 |
 | `src/mcp/` | MCP stdio transport、JSON-RPC protocol、client 和 filesystem provider |
-| `src/server.rs` | Axum HTTP API、SSE、CORS、trace 文件读取和任务创建逻辑 |
+| `src/server.rs` | Axum HTTP API、SSE、CORS、trace 文件读取和任务创建逻辑；浏览器路由把前端挂载到 `/sparrow_agent` 基路径，根路径重定向到该前缀 |
 | `src/conversation_store.rs` | Server 模式下按 conversation 复用 Agent，并限制同会话并发任务 |
 | `src/trace.rs` | Trace 事件类型、JSON 快照、截断和敏感字段脱敏 |
 | `src/trace_store.rs` | 内存 task/event 存储、seq 管理、snapshot、broadcast 和 TraceStoreSink |
 | `src/trace_compaction.rs` | Trace 归档 V2 压缩：事件合并、请求快照 diff/keyframe 编码和 SHA-256 校验 |
 | `src/trace_file.rs` | Trace 归档文件读写，支持 V1/V2 格式自动识别和展开 |
-| `src/cli_observer.rs` | CLI 浏览器观察模式，启动内嵌 HTTP server + 浏览器任务 URL |
+| `src/cli_observer.rs` | CLI 浏览器观察模式，启动内嵌 HTTP server + 输出挂载在 `/sparrow_agent` 下的任务/回放 URL |
 | `src/console.rs` | CLI 输入、密钥输入和流式渲染 |
 | `src/debug.rs` | 调试日志开关 |
-| `frontend/src/` | React 前端，包含聊天页、任务详情页、trace 归档页、trace 回放页、trace reducer 和 SSE hook |
-| `tests/` | Server、Trace 和 TraceStore 的契约测试 |
+| `frontend/src/` | React 前端，包含聊天页、任务详情页、trace 归档预览页、trace 回放页、trace 上传页、trace reducer 和 SSE hook |
+| `tests/` | 契约测试：Server 路由/SSE、TraceStore、Trace 归档压缩与读写、Bash 风险/审批/执行、子 Agent、`updateMemory` 工具、CLI 观察模式以及安装脚本 |
 | `docs/` | 功能设计方案和历史实施计划 |
 
 ## 测试与检查
@@ -464,6 +494,7 @@ pnpm build
 
 ## 设计文档
 
+- [上下文管理模块设计](docs/context-management-module-design.md)
 - [文件读写能力实现方案](docs/filesystem-capability-implementation-plan.md)
 - [上下文窗口治理方案](docs/context-window-management-plan.md)
 - [模型思考过程流式展示方案](docs/streaming-thinking-display-plan.md)

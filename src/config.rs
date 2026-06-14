@@ -21,7 +21,7 @@ use crate::{
 };
 
 const DEFAULT_MODEL: &str = "deepseek-v4-pro";
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. when read the file, ignore the build targer files like target dir in rust project, ouptput or dist dir in frontend project.  do not reade the entire project dir tree. read the file in entry file first.";
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. when read the file, ignore the build targer files like target dir in rust project, ouptput or dist dir in frontend project.  do not reade the entire project dir tree. read the file in entry file first. You have an `updateMemory` tool: call it to record the task goal, durable facts, decisions, and open questions that must survive across the conversation. Use it sparingly for things that matter later; use resolve_question and remove_fact to retire items that are no longer relevant.";
 const DEFAULT_REASONING_EFFORT: &str = "high";
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 100;
 const CONFIG_DIR_NAME: &str = ".sparrow_agent";
@@ -61,6 +61,7 @@ pub struct AppConfig {
     pub bash: BashConfig,
     pub sub_agent: SubAgentConfig,
     pub context: ContextConfig,
+    pub memory: MemoryConfig,
 }
 
 impl AppConfig {
@@ -121,6 +122,7 @@ impl AppConfig {
             bash: BashConfig::from_env(),
             sub_agent: SubAgentConfig::from_env(),
             context: ContextConfig::from_env(),
+            memory: MemoryConfig::from_env(),
         })
     }
 
@@ -144,6 +146,7 @@ impl AppConfig {
             bash: BashConfig::from_env(),
             sub_agent: SubAgentConfig::from_env(),
             context: ContextConfig::from_env(),
+            memory: MemoryConfig::from_env(),
         })
     }
 
@@ -683,6 +686,33 @@ impl ContextConfig {
             max_summary_tokens: self.max_summary_tokens,
             reasoning_policy: self.reasoning_policy,
         }
+    }
+}
+
+// ── Memory config ─────────────────────────────────────────────────────
+
+const DEFAULT_MEMORY_ENABLED: bool = true;
+
+#[derive(Debug, Clone)]
+pub struct MemoryConfig {
+    pub enabled: bool,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: DEFAULT_MEMORY_ENABLED,
+        }
+    }
+}
+
+impl MemoryConfig {
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        config.enabled = read_env_value("SPARROW_MEMORY_ENABLED")
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(config.enabled);
+        config
     }
 }
 

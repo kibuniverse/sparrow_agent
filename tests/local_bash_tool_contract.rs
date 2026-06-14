@@ -5,7 +5,8 @@ use sparrow_agent::{
     api::{FunctionCall, ToolCall},
     config::{
         AppConfig, BashApprovalMode, BashConfig, ConfirmationPolicy, ContextConfig,
-        FilesystemConfig, FilesystemMode, StreamingConfig, SubAgentConfig, ToolResultConfig,
+        FilesystemConfig, FilesystemMode, MemoryConfig, StreamingConfig, SubAgentConfig,
+        ToolResultConfig,
     },
     local_tools::LocalToolProvider,
     server::ServerState,
@@ -59,6 +60,7 @@ fn test_app_config(bash: BashConfig) -> AppConfig {
         bash,
         sub_agent: SubAgentConfig::default(),
         context: ContextConfig::default(),
+        memory: MemoryConfig::default(),
     }
 }
 
