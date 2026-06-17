@@ -57,7 +57,16 @@ impl BashApprovalGate {
         });
         let model = api_key
             .filter(|key| !key.trim().is_empty())
-            .map(|key| ModelRiskClassifier::new(&key, config.model_low_risk_threshold));
+            .and_then(|key| match ModelRiskClassifier::new(&key, config.model_low_risk_threshold) {
+                Ok(classifier) => Some(classifier),
+                Err(error) => {
+                    eprintln!(
+                        "bash approval> failed to initialize model risk classifier, \
+                         falling back to heuristic assessment: {error}"
+                    );
+                    None
+                }
+            });
         Self {
             config,
             assessor: BashRiskAssessor::new(),

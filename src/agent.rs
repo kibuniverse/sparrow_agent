@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -16,6 +16,7 @@ use crate::{
     local_tools::LocalToolProvider,
     memory_tool::{MemoryBuffer, MemoryToolProvider, new_memory_buffer},
     mcp::{client::McpClient, filesystem_provider::McpToolProvider},
+    startup_progress::StartupProgress,
     streaming::{AgentEventSink, AgentStreamEvent, StreamAccumulator},
     sub_agent::SubAgentToolProvider,
     tool_provider::ToolProvider,
@@ -26,6 +27,16 @@ use crate::{
 
 const CONTEXT_PROGRESS_BAR_WIDTH: usize = 24;
 const DEEPSEEK_V4_CONTEXT_TOKENS: u32 = 1_000_000;
+
+/// Maximum time to wait for an MCP server to spawn + handshake + list its tools.
+///
+/// The default filesystem server runs via `npx`, whose latency is dominated by
+/// npm registry resolution and Node cold start and is therefore highly
+/// variable. Without a cap, a stalled `npx` (unreachable registry, hung DNS)
+/// blocks startup indefinitely. 60s tolerates a legitimate cold fetch while
+/// guaranteeing startup can never hang forever. (Could be made configurable via
+/// `FilesystemConfig` later.)
+const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct Agent {
     client: DeepSeekClient,
@@ -38,18 +49,33 @@ pub struct Agent {
 
 impl Agent {
     pub async fn new(config: AppConfig) -> Result<Self> {
-        Self::new_inner(config, None).await
+        Self::new_inner(config, None, &StartupProgress::plain()).await
+    }
+
+    /// Like [`Agent::new`] but reports startup progress through `progress`.
+    /// Used by the interactive REPL to show a spinner during the variable
+    /// latency MCP server startup.
+    pub async fn new_with_progress(
+        config: AppConfig,
+        progress: &StartupProgress,
+    ) -> Result<Self> {
+        Self::new_inner(config, None, progress).await
     }
 
     pub(crate) async fn new_with_tool_allowlist(
         config: AppConfig,
         allowed_tools: Vec<String>,
     ) -> Result<Self> {
-        Self::new_inner(config, Some(allowed_tools)).await
+        Self::new_inner(config, Some(allowed_tools), &StartupProgress::plain()).await
     }
 
-    async fn new_inner(config: AppConfig, tool_allowlist: Option<Vec<String>>) -> Result<Self> {
-        let client = DeepSeekClient::new(&config.api_key);
+    async fn new_inner(
+        config: AppConfig,
+        tool_allowlist: Option<Vec<String>>,
+        progress: &StartupProgress,
+    ) -> Result<Self> {
+        progress.phase("Initializing agent…");
+        let client = DeepSeekClient::new(&config.api_key)?;
         let context = ContextManager::new(
             config.system_prompt.clone(),
             config.model.clone(),
@@ -65,25 +91,29 @@ impl Agent {
         let memory_buffer = new_memory_buffer();
 
         // Add local tools
+        progress.phase("Loading local tools…");
         if config.bash.enabled {
-            println!("Bash command tool enabled.");
-            println!("Roots:");
+            progress.detail("Bash command tool enabled.");
+            progress.detail("Roots:");
             for root in &config.bash.roots {
                 let display = root.canonicalize().unwrap_or_else(|_| root.clone());
-                println!("  - {}", display.display());
+                progress.detail(&format!("  - {}", display.display()));
             }
-            println!("Timeout: {} ms", config.bash.timeout_ms);
-            println!("Bash approval mode: {}", config.bash.approval_mode.as_str());
+            progress.detail(&format!("Timeout: {} ms", config.bash.timeout_ms));
+            progress.detail(&format!(
+                "Bash approval mode: {}",
+                config.bash.approval_mode.as_str()
+            ));
             if config.bash.approval_mode == BashApprovalMode::Smart {
-                println!(
+                progress.detail(&format!(
                     "Bash approval policy cache: {}",
                     config.bash.approval_policy_path.display()
-                );
+                ));
             }
         }
 
         tool_registry.add_provider(Box::new(LocalToolProvider::new(
-            &config.tavily_api_key,
+            config.tavily_api_key.clone(),
             config.bash.clone(),
             Some(config.api_key.clone()),
         )));
@@ -105,50 +135,59 @@ impl Agent {
                     continue;
                 }
 
-                match McpClient::connect(
-                    server_config.id.clone(),
-                    &server_config.command,
-                    &server_config.args,
-                    config.filesystem.roots.clone(),
-                )
-                .await
-                {
-                    Ok(mcp_client) => {
-                        match McpToolProvider::new(config.filesystem.clone(), mcp_client).await {
-                            Ok(provider) => {
-                                println!(
-                                    "Filesystem tools enabled ({} tools from '{}').",
-                                    provider.definitions().len(),
-                                    server_config.id,
-                                );
-                                println!("Roots:");
-                                for root in &config.filesystem.roots {
-                                    let display =
-                                        root.canonicalize().unwrap_or_else(|_| root.clone());
-                                    println!("  - {}", display.display());
-                                }
-                                println!("Mode: {:?}", config.filesystem.mode);
-                                tool_registry.add_provider(Box::new(provider));
-                            }
-                            Err(e) => {
-                                eprintln!(
-                                    "Warning: filesystem MCP provider init failed for '{}': {e}",
-                                    server_config.id,
-                                );
-                                eprintln!("Filesystem tools disabled for this session.");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: MCP server '{}' failed to connect: {e}",
+                progress.phase(&format!(
+                    "Starting filesystem server '{}'…",
+                    server_config.id
+                ));
+
+                // Spawn + handshake + list tools, capped so a stalled `npx`
+                // (hung registry/DNS) can never block startup forever. On
+                // timeout the inner future is dropped, which drops the partially
+                // built `McpClient`/`StdioTransport` and kills the child.
+                let outcome = tokio::time::timeout(MCP_CONNECT_TIMEOUT, async {
+                    let mcp_client = McpClient::connect(
+                        server_config.id.clone(),
+                        &server_config.command,
+                        &server_config.args,
+                        config.filesystem.roots.clone(),
+                    )
+                    .await?;
+                    McpToolProvider::new(config.filesystem.clone(), mcp_client).await
+                })
+                .await;
+
+                match outcome {
+                    Ok(Ok(provider)) => {
+                        progress.detail(&format!(
+                            "Filesystem tools enabled ({} tools from '{}').",
+                            provider.definitions().len(),
                             server_config.id,
-                        );
-                        eprintln!("Filesystem tools disabled for this session.");
-                        eprintln!(
+                        ));
+                        progress.detail("Roots:");
+                        for root in &config.filesystem.roots {
+                            let display = root.canonicalize().unwrap_or_else(|_| root.clone());
+                            progress.detail(&format!("  - {}", display.display()));
+                        }
+                        progress.detail(&format!("Mode: {:?}", config.filesystem.mode));
+                        tool_registry.add_provider(Box::new(provider));
+                    }
+                    Ok(Err(e)) => {
+                        progress.warn(&format!(
+                            "Warning: filesystem MCP provider init failed for '{}': {e}",
+                            server_config.id,
+                        ));
+                        progress.warn("Filesystem tools disabled for this session.");
+                    }
+                    Err(_elapsed) => {
+                        progress.warn(&format!(
+                            "Warning: MCP server '{}' did not start within {}s; filesystem tools disabled for this session.",
+                            server_config.id,
+                            MCP_CONNECT_TIMEOUT.as_secs(),
+                        ));
+                        progress.warn(&format!(
                             "Hint: ensure '{}' is available (e.g., npx is installed and Node.js is present).",
                             server_config.command,
-                        );
+                        ));
                     }
                 }
             }
@@ -1172,7 +1211,7 @@ mod tests {
     fn agent_test_config(sub_agent: SubAgentConfig) -> AppConfig {
         AppConfig {
             api_key: "test".into(),
-            tavily_api_key: "test".into(),
+            tavily_api_key: Some("test".into()),
             model: "deepseek-chat".into(),
             system_prompt: "You are a test agent.".into(),
             reasoning_effort: "high".into(),

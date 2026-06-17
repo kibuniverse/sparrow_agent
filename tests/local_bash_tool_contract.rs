@@ -33,7 +33,7 @@ fn bash_config(enabled: bool, root: PathBuf) -> BashConfig {
 fn test_app_config(bash: BashConfig) -> AppConfig {
     AppConfig {
         api_key: "test".into(),
-        tavily_api_key: "test".into(),
+        tavily_api_key: Some("test".into()),
         model: "deepseek-chat".into(),
         system_prompt: "You are a test agent.".into(),
         reasoning_effort: "high".into(),
@@ -67,8 +67,11 @@ fn test_app_config(bash: BashConfig) -> AppConfig {
 #[test]
 fn local_provider_excludes_bash_tool_when_disabled() {
     let root = tempfile::tempdir().unwrap();
-    let provider =
-        LocalToolProvider::new("test", bash_config(false, root.path().to_path_buf()), None);
+    let provider = LocalToolProvider::new(
+        Some("test".into()),
+        bash_config(false, root.path().to_path_buf()),
+        None,
+    );
 
     assert!(
         !provider
@@ -78,11 +81,45 @@ fn local_provider_excludes_bash_tool_when_disabled() {
     );
 }
 
+#[test]
+fn local_provider_registers_web_search_when_tavily_key_present() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = LocalToolProvider::new(
+        Some("test".into()),
+        bash_config(false, root.path().to_path_buf()),
+        None,
+    );
+
+    assert!(
+        provider
+            .definitions()
+            .iter()
+            .any(|tool| tool.function.name == "webSearch")
+    );
+}
+
+#[test]
+fn local_provider_excludes_web_search_when_tavily_key_absent() {
+    let root = tempfile::tempdir().unwrap();
+    let provider =
+        LocalToolProvider::new(None, bash_config(false, root.path().to_path_buf()), None);
+
+    assert!(
+        !provider
+            .definitions()
+            .iter()
+            .any(|tool| tool.function.name == "webSearch")
+    );
+}
+
 #[tokio::test]
 async fn local_provider_dispatches_bash_tool_when_enabled() {
     let root = tempfile::tempdir().unwrap();
-    let provider =
-        LocalToolProvider::new("test", bash_config(true, root.path().to_path_buf()), None);
+    let provider = LocalToolProvider::new(
+        Some("test".into()),
+        bash_config(true, root.path().to_path_buf()),
+        None,
+    );
 
     assert!(
         provider

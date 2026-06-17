@@ -49,7 +49,7 @@ const DEFAULT_SUB_AGENT_ALLOWED_TOOLS: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub api_key: String,
-    pub tavily_api_key: String,
+    pub tavily_api_key: Option<String>,
     pub model: String,
     pub system_prompt: String,
     pub reasoning_effort: String,
@@ -86,22 +86,16 @@ impl AppConfig {
                 value
             }
         };
+        validate_api_key("DEEPSEEK_API_KEY", &api_key)?;
 
-        let tavily_api_key = match read_env_value("TAVILY_API_KEY").or_else(|| {
+        // Tavily is optional: if the key is not in the environment or stored
+        // config, web search is simply disabled — no prompt, no error.
+        let tavily_api_key = read_env_value("TAVILY_API_KEY").or_else(|| {
             stored_config
                 .tavily_api_key
                 .as_deref()
                 .and_then(clean_value)
-        }) {
-            Some(value) => value,
-            None => {
-                print_setup_header_once(&config_path, &mut setup_header_printed);
-                let value = prompt_api_key("TAVILY_API_KEY")?;
-                stored_config.tavily_api_key = Some(value.clone());
-                should_save = true;
-                value
-            }
-        };
+        });
 
         if should_save {
             stored_config.save(&config_path)?;
@@ -129,8 +123,8 @@ impl AppConfig {
     pub fn from_env() -> Result<Self> {
         let api_key = env::var("DEEPSEEK_API_KEY")
             .context("DEEPSEEK_API_KEY environment variable is not set")?;
-        let tavily_api_key =
-            env::var("TAVILY_API_KEY").context("TAVILY_API_KEY environment variable is not set")?;
+        validate_api_key("DEEPSEEK_API_KEY", &api_key)?;
+        let tavily_api_key = read_env_value("TAVILY_API_KEY");
 
         Ok(Self {
             api_key,
@@ -245,14 +239,31 @@ fn prompt_api_key(name: &str) -> Result<String> {
     }
 }
 
+/// Ensure an API key is usable as an HTTP `Authorization` header value.
+///
+/// Catches empty or malformed keys (e.g. a stray newline copied from a file)
+/// here with a clear message, instead of panicking later inside the HTTP
+/// client when `Bearer {api_key}` fails to parse as a header value.
+fn validate_api_key(name: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("{name} is empty. Provide it via the {name} environment variable or interactive setup.");
+    }
+    if let Some(byte) = value.bytes().find(|b| !b.is_ascii_graphic()) {
+        bail!(
+            "{name} contains an invalid character (byte {byte:#x}, e.g. a newline or non-ASCII char). Re-export {name} as a clean ASCII value."
+        );
+    }
+    Ok(())
+}
+
 fn print_setup_header_once(config_path: &Path, printed: &mut bool) {
     if *printed {
         return;
     }
 
-    println!("First-time setup: Sparrow Agent needs API keys for DeepSeek and Tavily.");
+    println!("First-time setup: Sparrow Agent needs a DeepSeek API key.");
     println!(
-        "Values from environment variables are used first; missing values will be saved to {}.",
+        "Values from environment variables are used first; the DeepSeek key will be saved to {}.",
         config_path.display()
     );
     *printed = true;
@@ -835,6 +846,31 @@ fn default_deny_patterns() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_api_key_accepts_clean_value() {
+        assert!(validate_api_key("DEEPSEEK_API_KEY", "sk-abcdef123456").is_ok());
+    }
+
+    #[test]
+    fn validate_api_key_rejects_empty_value() {
+        let err = validate_api_key("DEEPSEEK_API_KEY", "").unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn validate_api_key_rejects_embedded_newline() {
+        // A stray newline (e.g. copied from a file) would otherwise panic the
+        // HTTP client when building the `Bearer` header value.
+        let err = validate_api_key("DEEPSEEK_API_KEY", "sk-abc\ndef").unwrap_err();
+        assert!(err.to_string().contains("invalid character"));
+    }
+
+    #[test]
+    fn validate_api_key_rejects_non_ascii() {
+        let err = validate_api_key("DEEPSEEK_API_KEY", "sk-abc-中文").unwrap_err();
+        assert!(err.to_string().contains("invalid character"));
+    }
 
     #[test]
     fn bash_approval_mode_from_str_parses_known_values() {

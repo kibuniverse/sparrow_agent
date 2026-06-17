@@ -57,20 +57,23 @@ pub struct DeepSeekClient {
 }
 
 impl DeepSeekClient {
-    pub fn new(api_key: &str) -> Self {
+    pub fn new(api_key: &str) -> Result<Self> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Content-Type", "application/json".parse().unwrap());
-        headers.insert(
-            "Authorization",
-            format!("Bearer {api_key}").parse().unwrap(),
-        );
+        let auth_value = format!("Bearer {api_key}")
+            .parse::<reqwest::header::HeaderValue>()
+            .with_context(|| {
+                "DEEPSEEK_API_KEY is not a valid HTTP header value; check for stray \
+                 characters such as a newline"
+            })?;
+        headers.insert("Authorization", auth_value);
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .build()
-            .expect("failed to build HTTP client");
+            .context("failed to build HTTP client")?;
 
-        Self { http }
+        Ok(Self { http })
     }
 
     pub async fn chat_completion(

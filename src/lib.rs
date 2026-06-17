@@ -18,6 +18,7 @@ pub mod memory_tool;
 pub mod mcp;
 pub mod rust_wasm_runner;
 pub mod server;
+pub mod startup_progress;
 pub mod streaming;
 pub mod sub_agent;
 pub mod tool_provider;

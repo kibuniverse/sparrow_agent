@@ -317,7 +317,7 @@ async fn browser_router_rejects_trace_archive_path_traversal() {
 fn test_config() -> AppConfig {
     AppConfig {
         api_key: "test".into(),
-        tavily_api_key: "test".into(),
+        tavily_api_key: Some("test".into()),
         model: "deepseek-chat".into(),
         system_prompt: "You are a test agent.".into(),
         reasoning_effort: "high".into(),
