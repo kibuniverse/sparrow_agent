@@ -65,7 +65,7 @@ rustup target add wasm32-unknown-unknown
 
 ### 配置 API Key
 
-首次运行时，如果没有检测到环境变量或配置文件，命令行会提示输入 `DEEPSEEK_API_KEY` 和 `TAVILY_API_KEY`，并保存到 `~/.sparrow_agent/config.json`：
+首次运行时，如果没有检测到环境变量或配置文件，命令行会提示输入 `DEEPSEEK_API_KEY`（必需）并保存到 `~/.sparrow_agent/config.json`。`TAVILY_API_KEY` 是可选的，缺失时不会提示，仅 `webSearch` 工具不会注册：
 
 ```bash
 cargo run
@@ -202,7 +202,7 @@ pnpm dev
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | 必需，除非配置文件已保存 |
-| `TAVILY_API_KEY` | Tavily API 密钥 | 必需，除非配置文件已保存 |
+| `TAVILY_API_KEY` | Tavily API 密钥 | 可选；未提供时不注册 `webSearch` 工具 |
 | `SPARROW_CONFIG_PATH` | 自定义配置文件路径 | `~/.sparrow_agent/config.json` |
 | `SPARROW_DEBUG` | 启用调试日志，设为任意值开启 | 关闭 |
 | `SPARROW_SERVER_ADDR` | Server 模式监听地址 | `127.0.0.1:8787` |

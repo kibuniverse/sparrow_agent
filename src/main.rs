@@ -5,6 +5,7 @@ use sparrow_agent::{
     config::AppConfig,
     console::{is_exit_command, read_user_input},
     server::run_server,
+    startup_progress::StartupProgress,
 };
 
 #[tokio::main]
@@ -37,7 +38,9 @@ async fn run() -> Result<()> {
         return run_cli_with_browser_trace(config, addr).await;
     }
 
-    let mut agent = Agent::new(config).await?;
+    let progress = StartupProgress::auto();
+    let mut agent = Agent::new_with_progress(config, &progress).await?;
+    progress.finish();
 
     println!("Sparrow Agent ready. Type 'exit' or 'quit' to stop.");
     loop {

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -15,18 +15,22 @@ const RUN_RUST_WASM_TOOL: &str = "runRustWasm";
 const RUN_BASH_COMMAND_TOOL: &str = "runBashCommand";
 
 pub struct LocalToolProvider {
-    tavily_api_key: String,
+    tavily_api_key: Option<String>,
     bash_runner: Option<BashRunner>,
     definitions: Vec<ToolDef>,
 }
 
 impl LocalToolProvider {
     pub fn new(
-        tavily_api_key: impl Into<String>,
+        tavily_api_key: Option<String>,
         bash_config: BashConfig,
         deepseek_api_key: Option<String>,
     ) -> Self {
-        let mut definitions = vec![web_search_tool(), run_rust_wasm_tool()];
+        let mut definitions = Vec::new();
+        if tavily_api_key.is_some() {
+            definitions.push(web_search_tool());
+        }
+        definitions.push(run_rust_wasm_tool());
         let bash_runner = if bash_config.enabled {
             definitions.push(run_bash_command_tool(&bash_config));
             Some(BashRunner::new(bash_config, deepseek_api_key))
@@ -35,7 +39,7 @@ impl LocalToolProvider {
         };
 
         Self {
-            tavily_api_key: tavily_api_key.into(),
+            tavily_api_key,
             bash_runner,
             definitions,
         }
@@ -56,9 +60,10 @@ impl ToolProvider for LocalToolProvider {
         let name = &tool_call.function.name;
         match name.as_str() {
             WEB_SEARCH_TOOL => {
-                let result =
-                    call_web_search_tool(&tool_call.function.arguments, &self.tavily_api_key)
-                        .await?;
+                let Some(api_key) = self.tavily_api_key.as_deref() else {
+                    bail!("web search is unavailable: TAVILY_API_KEY is not configured");
+                };
+                let result = call_web_search_tool(&tool_call.function.arguments, api_key).await?;
                 Ok(Some(result))
             }
             RUN_RUST_WASM_TOOL => {

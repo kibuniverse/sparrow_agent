@@ -21,11 +21,11 @@ pub struct ModelRiskClassifier {
 }
 
 impl ModelRiskClassifier {
-    pub fn new(api_key: &str, threshold: f32) -> Self {
-        Self {
-            client: DeepSeekClient::new(api_key),
+    pub fn new(api_key: &str, threshold: f32) -> Result<Self> {
+        Ok(Self {
+            client: DeepSeekClient::new(api_key)?,
             threshold,
-        }
+        })
     }
 
     pub async fn classify(&self, request: &BashRiskRequest) -> Result<Option<ModelRiskResponse>> {

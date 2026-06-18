@@ -30,7 +30,7 @@ fn sub_agent_config() -> SubAgentConfig {
 fn app_config() -> AppConfig {
     AppConfig {
         api_key: "test".into(),
-        tavily_api_key: "test".into(),
+        tavily_api_key: Some("test".into()),
         model: "deepseek-chat".into(),
         system_prompt: "You are a parent test agent.".into(),
         reasoning_effort: "high".into(),
